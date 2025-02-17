@@ -92,7 +92,7 @@ class LowRankHessianUnprecon:
     def __init__(self, prior, d, U):
         self.prior = prior
         self.LowRankH = LowRankOperator(d, U)
-        # Bhelp = Gamma_pr^-1 U
+        # Bhelp = Gamma_pr^-1 * U
         Bhelp = MultiVector(U)
         for i in range(U.nvec()):
             self.prior.Rsolver.solve(Bhelp[i],U[i])
@@ -215,7 +215,7 @@ class GaussianLRPosterior:
     :math:`H_{\\mbox{misfit}} U[:,i] = d[i] U[:,i]`
     """
 
-    def __init__(self, prior, d, U, precon, mean=None):
+    def __init__(self, prior, d, U, precon=True, mean=None):
         """
         Construct the Gaussian approximation of the posterior.
         Input:
@@ -233,7 +233,7 @@ class GaussianLRPosterior:
             self.sampler = LowRankPosteriorSampler(self.prior, self.d, self.U)
         elif self.precon is False:
             self.Hlr = LowRankHessianUnprecon(self.prior, self.d, self.U)
-            self.sampler = LowRankPosteriorSamplerUnprecon(self.prior, self.d, self.U) #WRITE THIS
+            #self.sampler = LowRankPosteriorSamplerUnprecon(self.prior, self.d, self.U) #WRITE THIS
         else:
             raise NameError('input `precon` should have value True or False')
         self.mean=None
