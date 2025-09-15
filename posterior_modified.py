@@ -92,11 +92,11 @@ class LowRankHessianUnprecon:
     def __init__(self, prior, d, U):
         self.prior = prior
         self.LowRankH = LowRankOperator(d, U)
-        # Bhelp = Gamma_pr^-1 * U
+        # Bhelp = Gamma_pr * U
         Bhelp = MultiVector(U)
         for i in range(U.nvec()):
             self.prior.Rsolver.solve(Bhelp[i],U[i])
-        # B = diag(d)^-1 + U^T Gamma_pr^-1 U
+        # B = diag(d)^-1 + U^T Gamma_pr U
         B = U.dot_mv(Bhelp)
         for i in range(B.shape[0]):
             B[i,i] += 1./d[i]
