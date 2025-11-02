@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import scipy.optimize as opt
 import scipy.linalg
 from scipy.integrate import trapezoid
-%matplotlib inline
+#%matplotlib inline
 import sys
 import os
 sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../") )
@@ -29,7 +29,7 @@ dl.set_log_active(False)
 
 import time
 import line_profiler
-%load_ext line_profiler
+#%load_ext line_profiler
 np.random.seed(42)
 
 # %%
@@ -161,8 +161,10 @@ plt.show()
 # %%
 
 problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa_true, wind_velocity, True)
-# relative noise level
-rel_noise = 0.01
+# true noise precision
+lam_true = 1e6
+# # relative noise level
+# rel_noise = 0.01
 
 # initialize vector in the state space
 utrue = problem_true.generate_vector(STATE)
@@ -173,11 +175,12 @@ problem_true.solveFwd(x[STATE], x)
 
 # observe solution and add error
 misfit.observe(x, misfit.d)
-MAX = misfit.d.norm("linf", "linf")
-noise_std_dev = rel_noise * MAX
+# MAX = misfit.d.norm("linf", "linf")
+# noise_std_dev = rel_noise * MAX
+noise_std_dev = 1/np.sqrt(lam_true)
 parRandom.normal_perturb(noise_std_dev,misfit.d)
 
-misfit.noise_variance = noise_std_dev*noise_std_dev
+misfit.noise_variance = noise_std_dev**2
 
 # plot solution
 nb.show_solution(Vh, true_initial_condition, utrue, "Solution")
@@ -191,22 +194,25 @@ plt.scatter(targets[:,0],targets[:,1],color='red')
 
 # %%
 
-def ComputePosterior(mesh, Vh, lmbda, V, pregamma, predelta, misfit, simulation_times, kappa, wind_velocity, gamma, delta):
+def ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta):
     '''
     Solve inverse problem
     Output: posterior object and mg = mu_u0^T Q_u0 + u_d^T Q_eps A
     Input: mesh and finite element space Vh, 
-            lmbda, V: low rank decomp of Q_pre^-1/2 A^T Q_eps A Q_pre^-1/2, where Q_pre is a preconditioning prior precision
-            pregamma and predelta: parameters of Q_pre (or "none" if no Q_pre preconditioner)
+            lmbda, V: low rank decomp of Q_pre^-1/2 A^T A Q_pre^-1/2, where Q_pre is a preconditioning prior precision
+            pretheta = pregamma, predelta: parameters of Q_pre (or "none" if no Q_pre preconditioner), and prelam: noise precision used in low rank approx
             misfit: observed data
             simulation_times: times at which to compute forward solution
             kappa, wind_velocity: parameters of forward solution
-            gamma, delta: hyperparameters of prior
+            theta = gamma, delta: hyperparameters of prior, lam: noise hyperparameter
     '''
+    pregamma, predelta, prelam = pretheta
+    gamma, delta, lam = theta
     
     prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
     prior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
     
+    misfit.noise_variance = 1/np.sqrt(lam)**2
     problem = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa, wind_velocity, True)
     
     ## Compute the gradient
@@ -225,11 +231,11 @@ def ComputePosterior(mesh, Vh, lmbda, V, pregamma, predelta, misfit, simulation_
     H = ReducedHessian(problem, misfit_only=True) 
     
     if pregamma is None or predelta is None:
-        posterior = GaussianLRPosterior(prior, lmbda, V, False)
+        precon = False
         lmbda_new = lmbda
         V_new = V
     elif pregamma == gamma and predelta == delta:
-        posterior = GaussianLRPosterior(prior, lmbda, V, True)
+        precon = True
         lmbda_new = lmbda
         V_new = V
     else:
@@ -249,7 +255,10 @@ def ComputePosterior(mesh, Vh, lmbda, V, pregamma, predelta, misfit, simulation_
         Omega = MultiVector(x[PARAMETER], k+pad)
         parRandom.normal(1., Omega)
         lmbda_new, V_new = singlePassG(H_temp, prior.R, prior.Rsolver, Omega, k)
-        posterior = GaussianLRPosterior(prior, lmbda_new, V_new, True)
+        precon = True
+    # correcting for noise precision used in low rank approx (prelam)
+    lmbda_new = lmbda_new*lam/prelam
+    posterior = GaussianLRPosterior(prior, lmbda_new, V_new, precon)
 
 #     Compute posterior mean
     H.misfit_only = False
@@ -275,21 +284,27 @@ def ComputePosterior(mesh, Vh, lmbda, V, pregamma, predelta, misfit, simulation_
 # hyperprior parameters (independent gamma distributions in gamma and delta, shifted to start or end at min/max values)
 alpha_del = 1
 alpha_gam = 1
+alpha_lam = 1
 beta_del = 1e-4
 beta_gam = 1e-4
+beta_lam = 1e-4
 
 max_del = 100
 min_gam = 0.1
+max_lam = 1e10 # THIS IS TEMPORARY, replace with something less arbitrary
 
 # fixing kappa
 kappa = kappa_true
 
 # %%
 
-# -log pi(gamma, delta | u_d) (- log posterior marginal joint pdf of gamma, delta)
-def neglogpi_gamma_delta(mesh, Vh, misfit, wind_velocity, lmbda, V, pregamma, predelta, kappa, gamma, delta):
+# -log pi(theta | u_d) (- log posterior marginal joint pdf of theta)
+def neglogpi_theta(mesh, Vh, misfit, wind_velocity, lmbda, V, pretheta, kappa, theta):
+    pregamma, predelta, prelam = pretheta
+    gamma, delta, lam = theta
     # compute new posterior
-    posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pregamma, predelta, misfit, simulation_times, kappa, wind_velocity, gamma, delta)
+    misfit.noise_variance = 1/np.sqrt(lam)**2
+    posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta)
     # -log(|Q_u_0|/|Q_u_0^\ast|)
     if pregamma is None or predelta is None:
         # Bhelp = Q_u0^-1 * V
@@ -302,16 +317,18 @@ def neglogpi_gamma_delta(mesh, Vh, misfit, wind_velocity, lmbda, V, pregamma, pr
             B[i,:] *= lmbda_new[i]
             B[i,i] += 1.
         Bvals = np.linalg.eigvals(B)
-        det_ratio = np.sum(np.log(Bvals)) - (alpha_del-1)*np.log(delta) - (alpha_gam-1)*np.log(gamma)
+        det_ratio = np.sum(np.log(Bvals))
     else:
         det_ratio = 0.0
         for ll in posterior.d:
             det_ratio += np.log(1+ll)
-    # -log pdf of gamma, delta prior
-    gamma_delta_prior = beta_del*delta + beta_gam*gamma
+    # |Q_eps| = lam^n_obs
+    det_ratio += -targets.shape[0]*observation_times.shape[0]*np.log(lam)
+    # -log pdf of gamma, delta, lambda prior
+    theta_prior = - (alpha_del-1)*np.log(delta) - (alpha_gam-1)*np.log(gamma) + beta_del*delta + beta_gam*gamma - (alpha_lam-1)*np.log(lam) + beta_lam*lam
     # set prior value to 0 outside the domain of the prior (neg log value to large)
     if gamma < min_gam or delta > max_del:
-        gamma_delta_prior = 1e30
+        theta_prior = 1e30
     # kappa_prior = 0.5*(q_kappa**2)*(np.log10(kappa)-mu_kappa)**2
     # u_0^\ast^T Q_u_0^\ast u_0^\ast 
     uQu = 0.5*mg.inner(posterior.mean)
@@ -320,13 +337,19 @@ def neglogpi_gamma_delta(mesh, Vh, misfit, wind_velocity, lmbda, V, pregamma, pr
     posterior.prior.init_vector(Qmu,0)
     posterior.prior.R.mult(posterior.prior.mean,Qmu)
     muQmu = 0.5*posterior.prior.mean.inner(Qmu)
-    return 0.5*det_ratio + gamma_delta_prior + uQu + muQmu, det_ratio, gamma_delta_prior, uQu, muQmu
+    # y^T Q_eps y
+    yQy = 0.5*misfit.d.inner(misfit.d)*lam
+    return 0.5*det_ratio + theta_prior + uQu + muQmu + yQy, det_ratio, theta_prior, uQu, muQmu, yQy
 # %%
 
 compute_start = time.time()
 
 # precompute low rank approximation of unpreconditioned or weakest-prior-preconditioned Hessian
 weakest_precon = False
+
+# either way, compute low rank approx using largest possible noise precision lam (actually I think it should be the smallest??)
+prelam = max_lam
+misfit.noise_variance = 1/np.sqrt(prelam)**2 # removed for testing
 
 if weakest_precon:
     pregamma = min_gam
@@ -339,8 +362,11 @@ else:
     predelta = None
     problem = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa, wind_velocity, True)
     
+pretheta = np.array([pregamma, predelta, prelam])
+    
 H_misfit_only = ReducedHessian(problem, misfit_only=True)
-k = 200
+k = 200 # ADD A STEP WHERE THIS IS COMPUTED RATHER THAN HARDCODED
+# ALSO FIGURE OUT HOW TO PREVENT SINGULARITY ERROR IF THIS IS CHOSEN TOO BIG
 pad = 20
 Omega = MultiVector(x[PARAMETER], k+pad)
 parRandom.normal(1., Omega)
@@ -352,35 +378,44 @@ else:
 
 
 
-# plot -log pi for a range of gammas, deltas
+# plot -log pi for a range of thetas
 nn = 10
+nl = 15
 g_range = np.linspace(0.35,0.65,nn)
 d_range = np.linspace(0.5,6,nn)
-logpi = np.zeros((len(g_range),len(d_range)))
-det_ratios = np.zeros((len(g_range),len(d_range)))
-priors = np.zeros((len(g_range),len(d_range)))
-uQus = np.zeros((len(g_range),len(d_range)))
-muQmus = np.zeros((len(g_range),len(d_range)))
-print('Progress in indices computed from (0,0) to ({0},{0}):'.format(nn-1))
+l_range = np.linspace(1e5, 2e6, nl)
+# l_range = np.power(10, np.linspace(4,8,nl)) # change later to 6 in the middle
+logpi = np.zeros((len(g_range),len(d_range),len(l_range)))
+det_ratios = np.zeros((len(g_range),len(d_range),len(l_range)))
+priors = np.zeros((len(g_range),len(d_range),len(l_range)))
+uQus = np.zeros((len(g_range),len(d_range),len(l_range)))
+muQmus = np.zeros((len(g_range),len(d_range),len(l_range)))
+yQys = np.zeros((len(g_range),len(d_range),len(l_range)))
+test_terms = np.zeros((len(g_range),len(d_range),len(l_range)))
+print('Progress in indices computed from (0,0,0) to ({0},{0},{1}):'.format(nn-1,nl-1))
 for i in range(len(g_range)):
     for j in range(len(d_range)):
-        #compute -log pi_hat(gamma, delta)
-        logpi_ij,det_ij,pri_ij,uQu_ij,muQmu_ij = neglogpi_gamma_delta(mesh, Vh, misfit, wind_velocity, lmbda, V, pregamma, predelta, kappa, g_range[i],d_range[j])
-        logpi[i,j] = logpi_ij
-        det_ratios[i,j] = det_ij
-        priors[i,j] = pri_ij
-        uQus[i,j] = uQu_ij
-        muQmus[i,j] = muQmu_ij
-        print('({0},{1})'.format(i,j))
+        for k in range(len(l_range)):
+            #compute -log pi_hat(gamma, delta)
+            theta = np.array([g_range[i],d_range[j],l_range[k]])
+            logpi_ijk,det_ijk,pri_ijk,uQu_ijk,muQmu_ijk,yQy_ijk = neglogpi_theta(mesh, Vh, misfit, wind_velocity, lmbda, V, pretheta, kappa, theta)
+            logpi[i,j,k] = logpi_ijk
+            det_ratios[i,j,k] = det_ijk
+            priors[i,j,k] = pri_ijk
+            uQus[i,j,k] = uQu_ijk
+            muQmus[i,j,k] = muQmu_ijk
+            yQys[i,j,k] = yQy_ijk
+            print('({0},{1},{2})'.format(i,j,k))
 compute_end = time.time()
 print(f"Compute time: {compute_end-compute_start} seconds")
 
 # %%
 
-plt.pcolormesh(d_range,g_range,logpi)
+lam_idx = 0
+plt.pcolormesh(d_range,g_range,logpi[:,:,lam_idx])
 plt.set_cmap('bone')
 plt.colorbar()
-plt.title(r'$-log \, \pi(\gamma, \delta | u_d)$')
+plt.title(fr'$-log \, \pi(\gamma, \delta, \lambda | u_d), \quad \lambda = {l_range[lam_idx]}$')
 plt.ylabel(r'$\gamma$')
 plt.xlabel(r'$\delta$')
 
@@ -390,13 +425,21 @@ plt.xlabel(r'$\delta$')
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
 plt.set_cmap('bone')
-plt.pcolormesh(d_range,g_range,np.exp(-logpi+np.min(logpi)))
+plt.pcolormesh(d_range,g_range,np.exp(-logpi[:,:,lam_idx]+np.min(logpi[:,:,lam_idx])))
 plt.colorbar()
 # plt.title(r'$\pi(\gamma, \delta | u_d), dofs={0}$'.format(dofs))
-plt.title(r'$\pi(\gamma, \delta | u_d)$')
+plt.title(r'$\pi(\gamma, \delta, \lambda | u_d)$')
 plt.ylabel(r'$\gamma$')
 plt.xlabel(r'$\delta$')
 # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
+
+# %%
+fig = plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 16})
+plt.plot(l_range,logpi[0,0,:])
+plt.xlabel(r'$\lambda$')
+plt.ylabel(r'$-log \pi(\gamma, \delta, \lambda|u_d)$')
+
 # %%
 
 # compute MAP point of pi(gamma, delta | u_d)
