@@ -86,17 +86,38 @@ dofs = 729
 nt = 20
 
 # %%
-mesh = dl.refine( dl.Mesh("adv_diff_dofs_{0}.xml".format(dofs)) )
+mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(dofs)) )
 wind_velocity = computeVelocityField(mesh)
 Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
 print( "Number of dofs: {0}".format( Vh.dim() ) )
 
 # %%
-ic_expr = dl.Expression(
-    'std::min(0.5,std::exp(-100*(std::pow(x[0]-0.35,2) +  std::pow(x[1]-0.7,2))))',
-    element=Vh.ufl_element())
+# diffusivity
+kappa_true = 0.001
 
-true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
+# the code as written requires a prior to be passed in, but this should not be used in generating the observations
+gamma = 1.
+delta = 8.
+# initialize prior w/ covariance C = (delta * I - gamma * Laplacian)^{-2}
+prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
+# constant mean
+prior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
+
+noise = dl.Vector()
+prior.init_vector(noise,"noise")
+parRandom.normal(1., noise)
+s_prior = dl.Function(Vh, name="sample_prior")
+prior.sample(noise,s_prior.vector())
+nb.plot(s_prior)
+
+# %%
+# ic_expr = dl.Expression(
+#     'std::min(0.5,std::exp(-100*(std::pow(x[0]-0.35,2) +  std::pow(x[1]-0.7,2))))',
+#     element=Vh.ufl_element())
+
+# true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
+
+true_initial_condition = s_prior.vector()
     
 t_init         = 0.
 t_final        = 4.
@@ -138,17 +159,6 @@ print ("Number of observation times: {0}".format(observation_times.shape[0]) )
 # initialize observations
 misfit = SpaceTimePointwiseStateObservation(Vh, observation_times, targets)
 
-# %%
-# diffusivity
-kappa_true = 0.001
-
-# the code as written requires a prior to be passed in, but this should not be used in generating the observations
-gamma = 1.
-delta = 8.
-# initialize prior w/ covariance C = (delta * I - gamma * Laplacian)^{-2}
-prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
-# constant mean
-prior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
 
 # %%
 
@@ -184,7 +194,7 @@ misfit.noise_variance = noise_std_dev**2
 
 # plot solution
 nb.show_solution(Vh, true_initial_condition, utrue, "Solution")
-plt.savefig("forward_solution.pdf",pad_inches=1)
+#plt.savefig("forward_solution.pdf",pad_inches=1)
 
 # %%
 
@@ -367,7 +377,7 @@ pretheta = np.array([pregamma, predelta, prelam])
 H_misfit_only = ReducedHessian(problem, misfit_only=True)
 k = 200 # ADD A STEP WHERE THIS IS COMPUTED RATHER THAN HARDCODED
 # ALSO FIGURE OUT HOW TO PREVENT SINGULARITY ERROR IF THIS IS CHOSEN TOO BIG
-pad = 20
+pad = 10
 Omega = MultiVector(x[PARAMETER], k+pad)
 parRandom.normal(1., Omega)
 
@@ -377,26 +387,23 @@ else:
     lmbda, V = singlePass(H_misfit_only, Omega, k)
 
 
-
 # plot -log pi for a range of thetas
 nn = 10
 nl = 15
 g_range = np.linspace(0.35,0.65,nn)
 d_range = np.linspace(0.5,6,nn)
-l_range = np.linspace(1e5, 2e6, nl)
-# l_range = np.power(10, np.linspace(4,8,nl)) # change later to 6 in the middle
+l_range = np.linspace(2.5e5, 7.5e5, nl)
 logpi = np.zeros((len(g_range),len(d_range),len(l_range)))
 det_ratios = np.zeros((len(g_range),len(d_range),len(l_range)))
 priors = np.zeros((len(g_range),len(d_range),len(l_range)))
 uQus = np.zeros((len(g_range),len(d_range),len(l_range)))
 muQmus = np.zeros((len(g_range),len(d_range),len(l_range)))
 yQys = np.zeros((len(g_range),len(d_range),len(l_range)))
-test_terms = np.zeros((len(g_range),len(d_range),len(l_range)))
 print('Progress in indices computed from (0,0,0) to ({0},{0},{1}):'.format(nn-1,nl-1))
 for i in range(len(g_range)):
     for j in range(len(d_range)):
         for k in range(len(l_range)):
-            #compute -log pi_hat(gamma, delta)
+            #compute -log pi_hat(theta)
             theta = np.array([g_range[i],d_range[j],l_range[k]])
             logpi_ijk,det_ijk,pri_ijk,uQu_ijk,muQmu_ijk,yQy_ijk = neglogpi_theta(mesh, Vh, misfit, wind_velocity, lmbda, V, pretheta, kappa, theta)
             logpi[i,j,k] = logpi_ijk
@@ -411,7 +418,7 @@ print(f"Compute time: {compute_end-compute_start} seconds")
 
 # %%
 
-lam_idx = 0
+lam_idx = 3
 plt.pcolormesh(d_range,g_range,logpi[:,:,lam_idx])
 plt.set_cmap('bone')
 plt.colorbar()
@@ -434,19 +441,50 @@ plt.xlabel(r'$\delta$')
 # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
 
 # %%
+g_idx = 3; d_idx = 3
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
-plt.plot(l_range,logpi[0,0,:])
+plt.plot(l_range,logpi[g_idx,d_idx,:])
 plt.xlabel(r'$\lambda$')
 plt.ylabel(r'$-log \pi(\gamma, \delta, \lambda|u_d)$')
 
 # %%
+fig = plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 16})
+plt.plot(l_range,np.exp(-logpi[g_idx,d_idx,:]+np.min(logpi[g_idx,d_idx,:])))
+plt.xlabel(r'$\lambda$')
+plt.ylabel(r'$\pi(\gamma, \delta, \lambda|u_d)$')
 
-# compute MAP point of pi(gamma, delta | u_d)
+# %%
+
+plt.pcolormesh(l_range,g_range,logpi[:,d_idx,:])
+plt.set_cmap('bone')
+plt.colorbar()
+plt.title(fr'$-log \, \pi(\gamma, \delta, \lambda | u_d), \quad \delta = {d_range[d_idx]}$')
+plt.ylabel(r'$\gamma$')
+plt.xlabel(r'$\lambda$')
+
+# %%
+
+# scaled arbitrarily to have max value 1 in order to avoid overflow errors
+fig = plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 16})
+plt.set_cmap('bone')
+plt.pcolormesh(l_range,g_range,np.exp(-logpi[:,d_idx,:]+np.min(logpi[:,d_idx,:])))
+plt.colorbar()
+# plt.title(r'$\pi(\gamma, \delta | u_d), dofs={0}$'.format(dofs))
+plt.title(rf'$\pi(\gamma, \delta, \lambda | u_d), \: \delta = {d_range[d_idx]:.2f}$')
+plt.ylabel(r'$\gamma$')
+plt.xlabel(r'$\lambda$')
+# plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
+
+# %%
+
+# compute MAP point of pi(theta | u_d)
 def neglogpi_helper(theta):
-    logpi,det,pri,uQu,muQmu = neglogpi_gamma_delta(mesh, Vh, misfit, wind_velocity, lmbda, V, pregamma, predelta, kappa, theta[0], theta[1])
+    logpi,det,pri,uQu,muQmu,yQy = neglogpi_theta(mesh, Vh, misfit, wind_velocity, lmbda, V, pretheta, kappa, theta)
     return logpi
-theta0 = np.array([1, 1])
+theta0 = np.array([1, 1, 1e6])
 theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',options={'disp':True})
 
 theta_MAP = theta_opt.x
