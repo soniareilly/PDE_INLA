@@ -37,6 +37,8 @@ to computing Karhunen-Loeve expansion,
 Numerical Linear Algebra with Applications, to appear.
 """
 
+# Changed np.linalg.solve to np.linalg.lstsq to avoid singularity errors when the rank is too low
+
 def singlePass(A,Omega,k,s=1,check=False):
     """
     The single pass algorithm for the Hermitian Eigenvalues Problems (HEP) as presented in [1].
@@ -67,7 +69,7 @@ def singlePass(A,Omega,k,s=1,check=False):
     Zt = Y_pr.dot_mv(Q)
     Wt = Y.dot_mv(Q)
         
-    Tt = np.linalg.solve(Zt, Wt)
+    Tt = np.linalg.lstsq(Zt, Wt, rcond=None)[0]
                 
     T = .5*Tt + .5*Tt.T
         
@@ -169,7 +171,7 @@ def singlePassG(A, B, Binv, Omega,k, s = 1, check = False):
     
     Xt = Y_pr.dot_mv(BQ)
     Wt = Ybar.dot_mv(Q)
-    Tt = np.linalg.solve(Xt,Wt)
+    Tt = np.linalg.lstsq(Xt, Wt, rcond=None)[0]
                 
     T = .5*Tt + .5*Tt.T
         

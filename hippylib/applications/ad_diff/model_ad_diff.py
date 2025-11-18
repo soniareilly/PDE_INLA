@@ -14,7 +14,7 @@
 # Software Foundation) version 2.0 dated June 1991.
 
 import dolfin as dl
-import ufl
+#import ufl
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
@@ -23,6 +23,9 @@ import sys
 import os
 sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../../") )
 from hippylib import *
+
+# added to replace ufl.min_value
+def Min(a, b): return (a+b-abs(a-b))/dl.Constant(2)
 
 class SpaceTimePointwiseStateObservation(Misfit):
     def __init__(self, Vh,
@@ -99,11 +102,10 @@ class SpaceTimePointwiseStateObservation(Misfit):
                 self.B.transpmult(self.Bu_snapshot, self.u_snapshot) 
                 out.store(self.u_snapshot, t)
         else:
-            pass    
-        
-        
+            pass   
+
 class TimeDependentAD:    
-    def __init__(self, mesh, Vh, prior, misfit, simulation_times, wind_velocity, gls_stab):
+    def __init__(self, mesh, Vh, prior, misfit, simulation_times, diffusivity, wind_velocity, gls_stab):
         self.mesh = mesh
         self.Vh = Vh
         self.prior = prior
@@ -116,7 +118,8 @@ class TimeDependentAD:
         u = dl.TrialFunction(Vh[STATE])
         v = dl.TestFunction(Vh[STATE])
         
-        kappa = dl.Constant(.001)
+        #kappa = dl.Constant(.001)
+        kappa = dl.Constant(diffusivity)
         dt_expr = dl.Constant(dt)
         
         r_trial = u + dt_expr*( -dl.div(kappa*dl.grad(u))+ dl.inner(wind_velocity, dl.grad(u)) )
@@ -126,7 +129,7 @@ class TimeDependentAD:
         h = dl.CellDiameter(mesh)
         vnorm = dl.sqrt(dl.inner(wind_velocity, wind_velocity))
         if gls_stab:
-            tau = ufl.min_value((h*h)/(dl.Constant(2.)*kappa), h/vnorm )
+            tau = Min((h*h)/(dl.Constant(2.)*kappa), h/vnorm )
         else:
             tau = dl.Constant(0.)
                             
@@ -356,9 +359,7 @@ class TimeDependentAD:
         for t in self.simulation_times[1:]:
             x[STATE].retrieve(ufunc.vector(), t)
             out_file.write(ufunc, t)
-            
-        
-        
+
 def v_boundary(x,on_boundary):
     return on_boundary
 

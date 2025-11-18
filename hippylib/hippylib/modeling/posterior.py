@@ -13,14 +13,20 @@
 # terms of the GNU General Public License (as published by the Free
 # Software Foundation) version 2.0 dated June 1991.
 
+# # modified to optionally accept input d, U that are an eigendecomposition of 
+# # the unpreconditioned misfit Hessian 
+
 from dolfin import Vector, Function
 from ..algorithms.lowRankOperator import LowRankOperator
+from ..algorithms.multivector import *
 import numpy as np
 
 class LowRankHessian:
     """
     Operator that represents the action of the low rank approximation
-    of the Hessian and of its inverse.
+    of the Hessian and of its inverse. d and U should be eigenpairs of
+    the preconditioned misfit Hessian, where U is orthogonal in the norm
+    induced by R, the prior precision.
     """
     def __init__(self, prior, d, U):
         self.prior = prior
@@ -33,26 +39,116 @@ class LowRankHessian:
         self.init_vector(self.help1, 0)
         
     def init_vector(self,x, dim):
+        '''
+        initialize a vector of length compatible with Gamma_post
+        '''
         self.prior.init_vector(x,dim)
     
     def inner(self,x,y):
+        '''
+        return y^T Gamma_post^{-1} x
+        '''
         Hx = Vector(self.help.mpi_comm())
         self.init_vector(Hx, 0)
         self.mult(x, Hx)
         return Hx.inner(y)
         
     def mult(self, x, y):
+        '''
+        apply Gamma_post^{-1} to x and write output to y
+        '''
+        # y = Gamma_pr^-1 * x
         self.prior.R.mult(x,y)
+        # help = U d U^T y = Gamma_pr A^T Gamma_eps^-1 A * x
         self.LowRankH.mult(y, self.help)
+        # help1 = Gamma_pr^-1 * help = A^T Gamma_eps^-1 A * x
         self.prior.R.mult(self.help,self.help1)
+        # y += help1 => y = Gamma_pr^-1 * x + A^T Gamma_eps^-1 A * x
         y.axpy(1, self.help1)
         
+    def solve(self, sol, rhs):
+        '''
+        apply Gamma_post to rhs and write output to sol
+        '''
+        # sol = Gamma_pr * rhs
+        self.prior.Rsolver.solve(sol, rhs)
+        # help = U dsolve U^T * rhs = Gamma_pr^1/2 V_r D_r V_r^T Gamma_pr^1/2 * rhs
+        self.LowRankHinv.mult(rhs, self.help)
+        # sol += -help => sol = (Gamma_pr - Gamma_pr^1/2 V_r D_r V_r^T Gamma_pr^1/2) * rhs
+        sol.axpy(-1, self.help)
+
+
+class LowRankHessianUnprecon:
+    """
+    Operator that represents the action of the low rank approximation
+    of the Hessian and of its inverse. d and U should be eigenpairs of
+    the unpreconditioned misfit Hessian, where U is orthogonal in the 
+    Euclidean norm.
+    """
+    def __init__(self, prior, d, U):
+        self.prior = prior
+        self.LowRankH = LowRankOperator(d, U)
+        # Bhelp = Gamma_pr * U
+        Bhelp = MultiVector(U)
+        for i in range(U.nvec()):
+            self.prior.Rsolver.solve(Bhelp[i],U[i])
+        # B = diag(d)^-1 + U^T Gamma_pr U
+        B = U.dot_mv(Bhelp)
+        for i in range(B.shape[0]):
+            B[i,i] += 1./d[i]
+        # c, D = eigvals, vecs of B
+        c,D = np.linalg.eigh(B)
+        cinv = 1.0 / c
+        # W = U*D
+        W = MultiVector(U)
+        MvDSmatMult(U,D,W)
+        # W_tilde = Gamma_pr * W
+        Wtilde = MultiVector(W)
+        for i in range(W.nvec()):
+            self.prior.Rsolver.solve(Wtilde[i],W[i])
+        # warning: W_tilde is not orthogonal in any of the standard inner products
+        self.LowRankHinv = LowRankOperator(cinv,Wtilde)
+        self.help = Vector(U[0].mpi_comm())
+        self.init_vector(self.help, 0)
+        self.help1 = Vector(U[0].mpi_comm())
+        self.init_vector(self.help1, 0)
+        
+    def init_vector(self,x, dim):
+        '''
+        initialize a vector of length compatible with Gamma_post
+        '''
+        self.prior.init_vector(x,dim)
+    
+    def inner(self,x,y):
+        '''
+        return y^T Gamma_post^{-1} x
+        '''
+        Hx = Vector(self.help.mpi_comm())
+        self.init_vector(Hx, 0)
+        self.mult(x, Hx)
+        return Hx.inner(y)
+        
+    def mult(self, x, y):
+        '''
+        apply Gamma_post^{-1} to x and write output to y
+        '''
+        # y = Gamma_pr^-1 x
+        self.prior.R.mult(x,y)
+        # help = U d U^T x
+        self.LowRankH.mult(x, self.help)
+        # y += help => y = (Gamma_pr^-1 + U d U^T)x = (Gamma_pr^-1 + A^T Gamma_eps^-1 A)x
+        y.axpy(1, self.help)
         
     def solve(self, sol, rhs):
+        '''
+        apply Gamma_post to rhs and write output to sol
+        '''
+        # sol = Gamma_pr * rhs
         self.prior.Rsolver.solve(sol, rhs)
+        # help = W_tilde C^-1 W_tilde^T * rhs
         self.LowRankHinv.mult(rhs, self.help)
+        # sol += - help => sol = (Gamma_pr - W_tilde C^-1 W_tilde^T) * rhs
         sol.axpy(-1, self.help)
-        
         
 class LowRankPosteriorSampler:
     """
@@ -82,6 +178,20 @@ class LowRankPosteriorSampler:
         s.axpy(-1., noise)
         s *= -1.
 
+class LowRankPosteriorSamplerUnprecon:
+    """
+    Object to sample from the low rank approximation
+    of the posterior.
+    """
+    def __init__(self, prior, d, U):
+        raise NotImplementedError('LowRankPosteriorSamplerUnprecon not implemented')
+        
+    def init_vector(self,x, dim):
+        self.prior.init_vector(x,dim)
+        
+    def sample(self, noise, s): # WRITE A NEW VERSION OF THIS
+        raise NotImplementedError('LowRankPosteriorSamplerUnprecon not implemented')
+
 class GaussianLRPosterior:
     """
     Class for the low rank Gaussian Approximation of the Posterior.
@@ -89,15 +199,19 @@ class GaussianLRPosterior:
     apply, solve, and Gaussian sampling based on the low rank
     factorization of the Hessian.
     
-    In particular if :math:`d` and :math:`U` are the dominant eigenpairs of
+    Input :code:`precon` should be True if :math:`d` and :math:`U` are the dominant eigenpairs of the prior preconditioned misfit Hessian,
     :math:`H_{\\mbox{misfit}} U[:,i] = d[i] R U[:,i]`
-    then we have:
+    and then:
     
     - low rank Hessian apply: :math:`y = ( R + RU D U^{T}) x.`
     - low rank Hessian solve: :math:`y = (R^-1 - U (I + D^{-1})^{-1} U^T) x.`
     - low rank Hessian Gaussian sampling: :math:`y = ( I - U S U^{T}) x`, where :math:`S = I - (I + D)^{-1/2}` and :math:`x \\sim \\mathcal{N}(0, R^{-1}).`
+
+    Input :code:`precon` should be False if :math:`d` and :math:`U` are the dominant eigenpairs of the unpreconditioned misfit Hessian,
+    :math:`H_{\\mbox{misfit}} U[:,i] = d[i] U[:,i]`
     """
-    def __init__(self, prior, d, U, mean=None):
+
+    def __init__(self, prior, d, U, precon=True, mean=None):
         """
         Construct the Gaussian approximation of the posterior.
         Input:
@@ -109,8 +223,15 @@ class GaussianLRPosterior:
         self.prior = prior
         self.d = d
         self.U = U
-        self.Hlr = LowRankHessian(prior, d, U)
-        self.sampler = LowRankPosteriorSampler(self.prior, self.d, self.U)
+        self.precon = precon
+        if self.precon is True:
+            self.Hlr = LowRankHessian(self.prior, self.d, self.U)
+            self.sampler = LowRankPosteriorSampler(self.prior, self.d, self.U)
+        elif self.precon is False:
+            self.Hlr = LowRankHessianUnprecon(self.prior, self.d, self.U)
+            #self.sampler = LowRankPosteriorSamplerUnprecon(self.prior, self.d, self.U) #WRITE THIS
+        else:
+            raise NameError('input `precon` should have value True or False')
         self.mean=None
         
         
@@ -209,7 +330,7 @@ class GaussianLRPosterior:
         return post_pointwise_variance, pr_pointwise_variance, correction_pointwise_variance
     
     def klDistanceFromPrior(self, sub_comp = False):
-        dplus1 = self.d + np.ones_like(self.d)
+        dplus1 = self.d + np.ones_like(self.d) # is this still true if the eigenvals are from unpreconditioned Hessian?
         
         c_logdet = 0.5*np.sum( np.log(dplus1) )
         c_trace  = -0.5*np.sum(self.d/dplus1)

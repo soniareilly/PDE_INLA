@@ -11,16 +11,16 @@ from scipy.integrate import trapezoid
 #%matplotlib inline
 import sys
 import os
-sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../") )
-sys.path.insert(1, '/mnt/c/Users/Sonia/Documents/Courant/Research/INLA/hippylib')
+os.environ["HIPPYLIB_BASE_DIR"] = '/mnt/c/Users/Sonia/Documents/Courant/Research/INLA/PDE_INLA/hippylib'
+sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR') )
 from hippylib import *
-sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "..") + "/applications/ad_diff/" )
-from model_ad_diff import SpaceTimePointwiseStateObservation
+sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR') + "/applications/ad_diff/" )
+from model_ad_diff import SpaceTimePointwiseStateObservation, TimeDependentAD
 
 # modified hippylib code
-from model_ad_diff_modified import TimeDependentAD # makes kappa no longer hardcoded
-from posterior_modified import * # adds version for unpreconditioned low rank decomp
-from prior_modified import * # changes Krylov solvers to LU/Cholesky for speed
+# model_ad_diff makes kappa no longer hardcoded
+# posterior adds version for unpreconditioned low rank decomp
+# prior changes Krylov solvers to LU/Cholesky for speed
 
 import logging
 logging.getLogger('FFC').setLevel(logging.WARNING)
@@ -455,7 +455,7 @@ plt.plot(l_range,np.exp(-logpi[g_idx,d_idx,:]+np.min(logpi[g_idx,d_idx,:])))
 plt.xlabel(r'$\lambda$')
 plt.ylabel(r'$\pi(\gamma, \delta, \lambda|u_d)$')
 
-# %%
+ # %%
 
 plt.pcolormesh(l_range,g_range,logpi[:,d_idx,:])
 plt.set_cmap('bone')
