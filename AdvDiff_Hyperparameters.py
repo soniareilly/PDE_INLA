@@ -2,11 +2,9 @@
 
 import dolfin as dl
 #import ufl
-import math
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize as opt
-import scipy.linalg
 from scipy.integrate import trapezoid
 #%matplotlib inline
 import sys
@@ -101,7 +99,8 @@ delta = 8.
 # initialize prior w/ covariance C = (delta * I - gamma * Laplacian)^{-2}
 prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
 # constant mean
-prior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
+prior_mean = 0.25
+prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
 
 noise = dl.Vector()
 prior.init_vector(noise,"noise")
@@ -123,7 +122,6 @@ t_init         = 0.
 t_final        = 4.
 t_1            = 1.
 dt             = t_final/nt #.1
-#observation_dt = .2
 observation_dt = 0.4 #1.6
     
 simulation_times = np.arange(t_init, t_final+.5*dt, dt)
@@ -220,7 +218,7 @@ def ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kap
     gamma, delta, lam = theta
     
     prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
-    prior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
+    prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
     
     misfit.noise_variance = 1/np.sqrt(lam)**2
     problem = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa, wind_velocity, True)
@@ -250,7 +248,7 @@ def ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kap
         V_new = V
     else:
         preprior = BiLaplacianPrior(Vh, pregamma, predelta, robin_bc=True)
-        preprior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
+        preprior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
         # apply sqrt precon prior precision and sqrt inverse of prior precision
         Wtemp = MultiVector(V)
         Wtemp2 = MultiVector(V)
@@ -297,7 +295,7 @@ alpha_gam = 1
 alpha_lam = 1
 beta_del = 1e-4
 beta_gam = 1e-4
-beta_lam = 1e-4
+beta_lam = 1e-8
 
 max_del = 100
 min_gam = 0.1
@@ -315,13 +313,14 @@ def neglogpi_theta(mesh, Vh, misfit, wind_velocity, lmbda, V, pretheta, kappa, t
     # compute new posterior
     misfit.noise_variance = 1/np.sqrt(lam)**2
     posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta)
-    # -log(|Q_u_0|/|Q_u_0^\ast|)
+    
+    # -log(|Q_pr|/|Q_post|)
     if pregamma is None or predelta is None:
-        # Bhelp = Q_u0^-1 * V
+        # Bhelp = Q_pr^-1 * V
         Bhelp = MultiVector(V_new)
         for i in range(V_new.nvec()):
             posterior.prior.Rsolver.solve(Bhelp[i],V_new[i])
-        # B = diag(lmbda) * V^T Q_u0^-1 V + I
+        # B = diag(lmbda) * V^T Q_pr^-1 V + I
         B = V_new.dot_mv(Bhelp)
         for i in range(B.shape[0]):
             B[i,:] *= lmbda_new[i]
@@ -332,24 +331,29 @@ def neglogpi_theta(mesh, Vh, misfit, wind_velocity, lmbda, V, pretheta, kappa, t
         det_ratio = 0.0
         for ll in posterior.d:
             det_ratio += np.log(1+ll)
-    # |Q_eps| = lam^n_obs
+    # -log|Q_eps| = n_obs*log(lam)
     det_ratio += -targets.shape[0]*observation_times.shape[0]*np.log(lam)
+    det_ratio *= 0.5
+
     # -log pdf of gamma, delta, lambda prior
     theta_prior = - (alpha_del-1)*np.log(delta) - (alpha_gam-1)*np.log(gamma) + beta_del*delta + beta_gam*gamma - (alpha_lam-1)*np.log(lam) + beta_lam*lam
     # set prior value to 0 outside the domain of the prior (neg log value to large)
-    if gamma < min_gam or delta > max_del:
+    if gamma < min_gam or delta > max_del or lam > max_lam:
         theta_prior = 1e30
-    # kappa_prior = 0.5*(q_kappa**2)*(np.log10(kappa)-mu_kappa)**2
-    # u_0^\ast^T Q_u_0^\ast u_0^\ast 
+
+    # -mu_post^T Q_post mu_post 
     uQu = 0.5*mg.inner(posterior.mean)
-    # - mu_0 Q_u0 mu_0
+
+    # mu_pr^T Q_pr mu_pr
     Qmu = dl.Vector(posterior.prior.R.mpi_comm())
     posterior.prior.init_vector(Qmu,0)
     posterior.prior.R.mult(posterior.prior.mean,Qmu)
     muQmu = 0.5*posterior.prior.mean.inner(Qmu)
+
     # y^T Q_eps y
     yQy = 0.5*misfit.d.inner(misfit.d)*lam
-    return 0.5*det_ratio + theta_prior + uQu + muQmu + yQy, det_ratio, theta_prior, uQu, muQmu, yQy
+
+    return det_ratio + theta_prior + uQu + muQmu + yQy, det_ratio, theta_prior, uQu, muQmu, yQy
 # %%
 
 compute_start = time.time()
@@ -359,13 +363,13 @@ weakest_precon = False
 
 # either way, compute low rank approx using largest possible noise precision lam (actually I think it should be the smallest??)
 prelam = max_lam
-misfit.noise_variance = 1/np.sqrt(prelam)**2 # removed for testing
+misfit.noise_variance = 1/np.sqrt(prelam)**2
 
 if weakest_precon:
     pregamma = min_gam
     predelta = max_del
     preprior = BiLaplacianPrior(Vh, pregamma, predelta, robin_bc=True)
-    preprior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
+    preprior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
     problem = TimeDependentAD(mesh, [Vh,Vh,Vh], preprior, misfit, simulation_times, kappa, wind_velocity, True)
 else:
     pregamma = None
@@ -376,7 +380,6 @@ pretheta = np.array([pregamma, predelta, prelam])
     
 H_misfit_only = ReducedHessian(problem, misfit_only=True)
 k = 200 # ADD A STEP WHERE THIS IS COMPUTED RATHER THAN HARDCODED
-# ALSO FIGURE OUT HOW TO PREVENT SINGULARITY ERROR IF THIS IS CHOSEN TOO BIG
 pad = 10
 Omega = MultiVector(x[PARAMETER], k+pad)
 parRandom.normal(1., Omega)
@@ -390,9 +393,9 @@ else:
 # plot -log pi for a range of thetas
 nn = 10
 nl = 15
-g_range = np.linspace(0.35,0.65,nn)
-d_range = np.linspace(0.5,6,nn)
-l_range = np.linspace(2.5e5, 7.5e5, nl)
+g_range = np.linspace(0.7,1.5,nn)
+d_range = np.linspace(0.1,15,nn)
+l_range = np.linspace(5e5, 1.5e6, nl)
 logpi = np.zeros((len(g_range),len(d_range),len(l_range)))
 det_ratios = np.zeros((len(g_range),len(d_range),len(l_range)))
 priors = np.zeros((len(g_range),len(d_range),len(l_range)))
@@ -608,11 +611,11 @@ dt = dt/2
 simulation_times = np.arange(t_init, t_final+.5*dt, dt)
 
 dummy_prior = BiLaplacianPrior(Vh, 1., 8., robin_bc=True)
-dummy_prior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
+dummy_prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
 
 if weakest_precon:
     preprior = BiLaplacianPrior(Vh, pregamma, predelta, robin_bc=True)
-    preprior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
+    preprior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
     problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], preprior, misfit, simulation_times, kappa_true, wind_velocity, True)
 else:
     problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], dummy_prior, misfit, simulation_times, kappa_true, wind_velocity, True)
@@ -659,7 +662,7 @@ def posterior_marginals(locs,u_0_eval,quad_points):
         gamma = quad_points[idx,0]
         delta = quad_points[idx,1]
         prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
-        prior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
+        prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
         posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pregamma, predelta, misfit, simulation_times, kappa, wind_velocity, gamma, delta)
         # pi(u_0^i|k,u_d)
         posterior_var,pr,corr = posterior.pointwise_variance(method="Exact")
@@ -728,4 +731,80 @@ plt.plot(locations[1][0],locations[1][1],'rs',markersize=10,label=r'$x_2$')
 plt.legend(loc='upper right', bbox_to_anchor=(0.9, 0.3))
 fig.colorbar(im, pad=0.05)
 # plt.savefig("point_locations.pdf",bbox_inches='tight', pad_inches=0)
+# %%
+# TESTING!!
+
+# changes made so far:
+# made forward map approx I by reducing the final time by a factor of 100
+# changed observation points to be random so that the reconstruction would be better
+# (not only along buildings)
+
+## define lambda and generate noisy data
+gamma = 1; delta = 8
+prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
+prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
+problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa_true, wind_velocity, True)
+lam_true = 1e6
+# initialize vector in the state space
+utrue = problem_true.generate_vector(STATE)
+x = [utrue, true_initial_condition, None]
+# solve forward problem
+problem_true.solveFwd(x[STATE], x)
+# observe solution and add error
+misfit.observe(x, misfit.d)
+noise_std_dev = 1/np.sqrt(lam_true)
+parRandom.normal_perturb(noise_std_dev,misfit.d)
+misfit.noise_variance = noise_std_dev**2
+
+#%%
+
+## find low rank approx
+prelam = max_lam
+misfit.noise_variance = 1/np.sqrt(prelam)**2
+pregamma = None
+predelta = None
+problem = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa, wind_velocity, True)
+pretheta = np.array([pregamma, predelta, prelam])
+H_misfit_only = ReducedHessian(problem, misfit_only=True)
+k = 200
+pad = 10
+Omega = MultiVector(x[PARAMETER], k+pad)
+parRandom.normal(1., Omega)
+lmbda, V = singlePass(H_misfit_only, Omega, k)
+
+## compute posterior
+#lam = lam_true
+l_range = np.linspace(1e5, 10e5, 15)
+for lam in l_range:
+    theta = gamma, delta, lam
+    misfit.noise_variance = 1/np.sqrt(lam)**2
+    posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta)
+    ## compute ||Ax-b||^2
+    # plot posterior mean
+    #nb.plot(dl.Function(Vh,posterior.mean),mytitle='Posterior Mean')
+
+    misfit_postmean = SpaceTimePointwiseStateObservation(Vh, observation_times, targets)
+    problem_postmean = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit_postmean, simulation_times, kappa_true, wind_velocity, True)
+    # initialize vector in the state space
+    u_postmean = problem_postmean.generate_vector(STATE)
+    x = [u_postmean, posterior.mean, None]
+    # solve forward problem
+    problem_postmean.solveFwd(x[STATE], x)
+    # observe solution
+    misfit_postmean.observe(x, misfit_postmean.d)
+    misfit_postmean
+    # compute ||Ax-b||^2
+    diff = misfit_postmean.d.copy()
+    diff.axpy(-1,misfit.d)
+    normsq = diff.inner(diff)
+    print(normsq)
+
+#%%
+nb.plot(dl.Function(Vh,posterior.mean),mytitle='Posterior Mean')
+
+## compute expected value of ||Ax-b||^2
+# %%
+nobs = targets.shape[0]*observation_times.shape[0]
+expected_normsq = nobs/lam_true
+print(expected_normsq)
 # %%
