@@ -391,8 +391,8 @@ else:
 
 
 # plot -log pi for a range of thetas
-nn = 10
-nl = 15
+nn = 4
+nl = 4
 g_range = np.linspace(0.7,1.5,nn)
 d_range = np.linspace(0.1,15,nn)
 l_range = np.linspace(5e5, 1.5e6, nl)
@@ -497,19 +497,33 @@ print(theta_MAP)
 
 # find inverse Hessian at MAP point
 # choosing the finite difference dx's here is finicky -- can't be much smaller
-dgam = 1e-1 #1e-3
-ddel = 8e-1 #1e-2
-Hess_gg = (neglogpi_helper(theta_MAP-dgam*np.array([1,0]))
-           -2*neglogpi_helper(theta_MAP)
-           +neglogpi_helper(theta_MAP+dgam*np.array([1,0])))/dgam**2
-Hess_gd = (neglogpi_helper(theta_MAP+dgam*np.array([1,0])+ddel*np.array([0,1]))
-           +neglogpi_helper(theta_MAP)
-           -neglogpi_helper(theta_MAP+dgam*np.array([1,0]))
-           -neglogpi_helper(theta_MAP+ddel*np.array([0,1])))/dgam/ddel
-Hess_dd = (neglogpi_helper(theta_MAP-ddel*np.array([0,1]))
-           -2*neglogpi_helper(theta_MAP)
-           +neglogpi_helper(theta_MAP+ddel*np.array([0,1])))/ddel**2
-Hess_MAP = np.array([[Hess_gg,Hess_gd],[Hess_gd,Hess_dd]])
+dtheta = [1e-1,8e-1,1e3] # test last number options
+ntheta = np.size(dtheta)
+
+Hess_MAP = np.zeros((ntheta,ntheta))
+
+# compute necessary function evaluations for Hessian finite difference estimation
+neglogpiMAP = neglogpi_helper(theta_MAP)
+plustwo = np.zeros((ntheta,ntheta))
+plusone = np.zeros(ntheta)
+minusone = np.zeros(ntheta)
+for i in range(ntheta):
+    dtheta_i = np.zeros(ntheta)
+    dtheta_i[i] = dtheta[i]
+    plusone[i] = neglogpi_helper(theta_MAP + dtheta_i)
+    minusone[i] = neglogpi_helper(theta_MAP - dtheta_i)
+    for j in range(i+1,ntheta):
+        dtheta_i_j = np.zeros(ntheta)
+        dtheta_i_j[i] = dtheta[i]; dtheta_i_j[j] = dtheta[j]
+        plustwo[i,j] = neglogpi_helper(theta_MAP + dtheta_i_j)
+        plustwo[j,i] = plustwo[i,j]
+# compute Hessian using precomputed function evaluations
+for i in range(ntheta):
+    Hess_MAP[i,i] = (minusone[i] - 2*neglogpiMAP + plusone[i])/dtheta[i]**2
+    for j in range(i+1,ntheta):
+        Hess_MAP[i,j] = (plustwo[i,j] + neglogpiMAP - plusone[i] - plusone[j])/dtheta[i]/dtheta[j]
+        Hess_MAP[j,i] = Hess_MAP[i,j]
+
 H_MAP_inv = np.linalg.inv(Hess_MAP)
 
 # find principal directions
@@ -518,139 +532,177 @@ Hinv_L_sqrt = np.diag(np.sqrt(Hinv_lam))
 def theta_of_z(z):
     return theta_MAP + np.dot(Hinv_V,np.dot(Hinv_L_sqrt,z))
 
-# %%
-Hinv_lam
+print(f'eigenvals of inv Hessian at MAP: {Hinv_lam}')
+
 # %%
 # for each coordinate of z, find its values with significant probability
 delta_z = 1
 delta_pi = 2.5
 maxiter = 20
 
-z_highprob = [np.array([0.0]) for i in range(len(theta_MAP))]
-for idx in range(len(theta_MAP)):
-    z = np.array([0.0,0.0])
+z_highprob = [np.array([0.0]) for i in range(ntheta)]
+for idx in range(ntheta):
+    z = np.zeros(ntheta)
     z[idx] = delta_z
     count = 0
-    while theta_of_z(z)[idx]>0 and neglogpi_helper(theta_of_z(z)) - neglogpi_helper(theta_MAP) < delta_pi and count < maxiter:
+    while all(theta_of_z(z)>0) and neglogpi_helper(theta_of_z(z)) - neglogpi_helper(theta_MAP) < delta_pi and count < maxiter:
         z_highprob[idx] = np.append(z_highprob[idx],z[idx])
         z[idx] += delta_z
         count += 1
         print(count)
     count = 0
     z[idx] = -delta_z
-    while theta_of_z(z)[idx]>0 and neglogpi_helper(theta_of_z(z)) - neglogpi_helper(theta_MAP) < delta_pi and count < maxiter:
+    while all(theta_of_z(z)>0) and neglogpi_helper(theta_of_z(z)) - neglogpi_helper(theta_MAP) < delta_pi and count < maxiter:
         z_highprob[idx] = np.append(z_highprob[idx],z[idx])
         z[idx] -= delta_z
         count += 1
         print(count)
 
-# check each pair to find quadrature points (not currently generalized to >2 parameters)
+# %%
+# Find quadrature points
+
+# list pairs of points given two lists of point locations
+# e.g., inputs [[0 0],[1 1]] and [2 3], output [[0 0 2],[1 1 2],[0 0 3],[1 1 3]]
+# first input must be list of lists, second must be list
+def pt_pairs(list1, list2):
+    newlist = []
+    for i in range(len(list1)):
+        for j in range(len(list2)):
+            newlist.append(list1[i]+[list2[j]])
+    return newlist
+
+# use to recursively find all combinations of possible points
+all_points = [[zval] for zval in z_highprob[0]]
+if ntheta > 1:
+    for idx in range(1,ntheta):
+        all_points = pt_pairs(all_points, z_highprob[idx])
+
+# search through them for only the ones with high enough probability
+# could be more efficient -- don't recalculate along axes, and/or store values for later
 quad_points = []
-for i in range(len(z_highprob[0])):
-    for j in range(len(z_highprob[1])):
-        theta_ij = theta_of_z(np.array([z_highprob[0][i],z_highprob[1][j]]))
-        if neglogpi_helper(theta_ij) - neglogpi_helper(theta_MAP) < delta_pi:
-            quad_points.append(theta_ij)
+for i in range(len(all_points)):
+    theta_i = theta_of_z(np.array(all_points[i]))
+    if neglogpi_helper(theta_i) - neglogpi_helper(theta_MAP) < delta_pi:
+        quad_points.append(theta_i)
 quad_points = np.array(quad_points)
-# %%
 
-# approximate value of pi(gamma, delta | data) at MAP point, from Laplace approximation
+# %%
+# scatter plot of quadrature points (if 3D)
+fig = plt.figure(figsize=(10,10))
+ax = fig.add_subplot(projection='3d')
+ax.scatter(quad_points[:,0],quad_points[:,1],quad_points[:,2],color='red',label='quadrature points') 
+ax.set_xlabel(r'$\gamma$')
+ax.set_ylabel(r'$\delta$')
+ax.set_zlabel(r'$\lambda$')
+ax.set_title('Quadrature Points')
+
+# %%
+# approximate value of pi(theta | data) at MAP point, from Laplace approximation
 scale = np.sqrt(np.linalg.det(Hess_MAP))/2/np.pi
-neglogpiMAP = neglogpi_helper(theta_MAP)
 
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.set_cmap('bone')
-# plot scaled pi(gamma, delta | data) with quadrature points
-plt.pcolormesh(d_range,g_range,np.exp(-logpi+neglogpiMAP)*scale)
-plt.colorbar()
-#plt.title('Quadrature points')
-plt.title(r'$\pi(\gamma, \delta | u_d)$')
-plt.ylabel(r'$\gamma$')
-plt.xlabel(r'$\delta$')
-# plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
-# plt.axis('scaled')
-# zoom = 20
-# w, h = fig.get_size_inches()
-# fig.set_size_inches(w * zoom, h * zoom)
+# # %%
 
-# %%
+# fig = plt.figure(figsize=(10,7.2))
+# plt.rcParams.update({'font.size': 16})
+# plt.set_cmap('bone')
+# # plot scaled pi(gamma, delta | data) with quadrature points
+# plt.pcolormesh(d_range,g_range,np.exp(-logpi+neglogpiMAP)*scale)
+# plt.colorbar()
+# #plt.title('Quadrature points')
+# plt.title(r'$\pi(\gamma, \delta | u_d)$')
+# plt.ylabel(r'$\gamma$')
+# plt.xlabel(r'$\delta$')
+# # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
+# # plt.axis('scaled')
+# # zoom = 20
+# # w, h = fig.get_size_inches()
+# # fig.set_size_inches(w * zoom, h * zoom)
 
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.set_cmap('bone')
-# plot scaled pi(gamma, delta | data) with quadrature points
-plt.pcolormesh(d_range,g_range,np.exp(-logpi+neglogpiMAP)*scale)
-plt.colorbar()
-plt.scatter(quad_points[:,1],quad_points[:,0],color='red',label='quadrature points') 
-plt.title(r'$\pi(\gamma, \delta | u_d)$')
-plt.ylabel(r'$\gamma$')
-plt.xlabel(r'$\delta$')
-plt.legend(loc='upper left') #, bbox_to_anchor=(0.9, 0.3))
-# plt.savefig("quad_points.pdf",bbox_inches='tight', pad_inches=0)
+# # %%
 
-# %%
-# check that pi(gamma,delta | data) integrates to ~1 using quadrature
-d_area = np.sqrt(np.prod(Hinv_lam))*delta_z**2*np.linalg.norm(np.cross(np.append(Hinv_V[0],0),np.append(Hinv_V[1],0)))
-total = 0
-for i in range(quad_points.shape[0]):
-    total += np.exp(-neglogpi_helper(quad_points[i,:])+neglogpiMAP)*scale
-total*d_area
+# # plot scaled pi(gamma, delta | data) with quadrature points
+# fig = plt.figure(figsize=(10,7.2))
+# plt.rcParams.update({'font.size': 16})
+# plt.set_cmap('bone')
+# plt.pcolormesh(d_range,g_range,np.exp(-logpi+neglogpiMAP)*scale)
+# plt.colorbar()
+# plt.scatter(quad_points[:,1],quad_points[:,0],color='red',label='quadrature points') 
+# plt.title(r'$\pi(\gamma, \delta | u_d)$')
+# plt.ylabel(r'$\gamma$')
+# plt.xlabel(r'$\delta$')
+# plt.legend(loc='upper left') #, bbox_to_anchor=(0.9, 0.3))
+# # plt.savefig("quad_points.pdf",bbox_inches='tight', pad_inches=0)
 
-# %%
-# upgrade to a finer mesh
-dofs = 2779
-mesh = dl.refine( dl.Mesh("adv_diff_dofs_{0}.xml".format(dofs)) )
-wind_velocity = computeVelocityField(mesh)
-Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
+# # %%
+# # check that pi(gamma,delta | data) integrates to ~1 using quadrature
+# # assumes 2D for now
+# d_area = np.sqrt(np.prod(Hinv_lam))*delta_z**2*np.linalg.norm(np.cross(np.append(Hinv_V[0],0),np.append(Hinv_V[1],0)))
+# total = 0
+# for i in range(quad_points.shape[0]):
+#     total += np.exp(-neglogpi_helper(quad_points[i,:])+neglogpiMAP)*scale
+# total*d_area
 
-true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
-misfit = SpaceTimePointwiseStateObservation(Vh, observation_times, targets)
+# # %%
+# # upgrade to a finer mesh
+# dofs = 2779
+# mesh = dl.refine( dl.Mesh("adv_diff_dofs_{0}.xml".format(dofs)) )
+# wind_velocity = computeVelocityField(mesh)
+# Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
 
-dt = dt/2
-simulation_times = np.arange(t_init, t_final+.5*dt, dt)
+# true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
+# misfit = SpaceTimePointwiseStateObservation(Vh, observation_times, targets)
 
-dummy_prior = BiLaplacianPrior(Vh, 1., 8., robin_bc=True)
-dummy_prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
+# dt = dt/2
+# simulation_times = np.arange(t_init, t_final+.5*dt, dt)
 
-if weakest_precon:
-    preprior = BiLaplacianPrior(Vh, pregamma, predelta, robin_bc=True)
-    preprior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
-    problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], preprior, misfit, simulation_times, kappa_true, wind_velocity, True)
-else:
-    problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], dummy_prior, misfit, simulation_times, kappa_true, wind_velocity, True)
+# dummy_prior = BiLaplacianPrior(Vh, 1., 8., robin_bc=True)
+# dummy_prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
 
-# relative noise level
-rel_noise = 0.01
-# initialize vector in the state space
-utrue = problem_true.generate_vector(STATE)
-x = [utrue, true_initial_condition, None]
-# solve forward problem
-problem_true.solveFwd(x[STATE], x)
-# observe solution and add error
-misfit.observe(x, misfit.d)
-MAX = misfit.d.norm("linf", "linf")
-noise_std_dev = rel_noise * MAX
-parRandom.normal_perturb(noise_std_dev,misfit.d)
-misfit.noise_variance = noise_std_dev*noise_std_dev
+# if weakest_precon:
+#     preprior = BiLaplacianPrior(Vh, pregamma, predelta, robin_bc=True)
+#     preprior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
+#     problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], preprior, misfit, simulation_times, kappa_true, wind_velocity, True)
+# else:
+#     problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], dummy_prior, misfit, simulation_times, kappa_true, wind_velocity, True)
 
-H_misfit_only = ReducedHessian(problem_true, misfit_only=True)
-k = 128
-pad = 20
-Omega = MultiVector(x[PARAMETER], k+pad)
-parRandom.normal(1., Omega)
+# # relative noise level
+# rel_noise = 0.01
+# # initialize vector in the state space
+# utrue = problem_true.generate_vector(STATE)
+# x = [utrue, true_initial_condition, None]
+# # solve forward problem
+# problem_true.solveFwd(x[STATE], x)
+# # observe solution and add error
+# misfit.observe(x, misfit.d)
+# MAX = misfit.d.norm("linf", "linf")
+# noise_std_dev = rel_noise * MAX
+# parRandom.normal_perturb(noise_std_dev,misfit.d)
+# misfit.noise_variance = noise_std_dev*noise_std_dev
 
-if weakest_precon:
-    lmbda, V = singlePassG(H_misfit_only, preprior.R, preprior.Rsolver, Omega, k) 
-else:
-    lmbda, V = singlePass(H_misfit_only, Omega, k)
-#     Bhelp = MultiVector(V) # ??
+# H_misfit_only = ReducedHessian(problem_true, misfit_only=True)
+# k = 128
+# pad = 20
+# Omega = MultiVector(x[PARAMETER], k+pad)
+# parRandom.normal(1., Omega)
 
-# overwriting the previous one, now for finer mesh
-def neglogpi_helper(theta):
-    logpi,det,pri,uQu,muQmu = neglogpi_gamma_delta(mesh, Vh, misfit, wind_velocity, lmbda, V, pregamma, predelta, kappa, theta[0], theta[1])
-    return logpi
-neglogpiMAP = neglogpi_helper(theta_MAP)
+# if weakest_precon:
+#     lmbda, V = singlePassG(H_misfit_only, preprior.R, preprior.Rsolver, Omega, k) 
+# else:
+#     lmbda, V = singlePass(H_misfit_only, Omega, k)
+# #     Bhelp = MultiVector(V) # ??
+
+# # overwriting the previous one, now for finer mesh
+# def neglogpi_helper(theta):
+#     logpi,det,pri,uQu,muQmu = neglogpi_gamma_delta(mesh, Vh, misfit, wind_velocity, lmbda, V, pregamma, predelta, kappa, theta[0], theta[1])
+#     return logpi
+# neglogpiMAP = neglogpi_helper(theta_MAP)
+
+
+
+
+
+
+### INSERT QOI COMPUTATION HERE
 
 # %%
 # find pi(x^i|u_d) for each location i in locs at values x_eval of x
@@ -731,80 +783,4 @@ plt.plot(locations[1][0],locations[1][1],'rs',markersize=10,label=r'$x_2$')
 plt.legend(loc='upper right', bbox_to_anchor=(0.9, 0.3))
 fig.colorbar(im, pad=0.05)
 # plt.savefig("point_locations.pdf",bbox_inches='tight', pad_inches=0)
-# %%
-# TESTING!!
 
-# changes made so far:
-# made forward map approx I by reducing the final time by a factor of 100
-# changed observation points to be random so that the reconstruction would be better
-# (not only along buildings)
-
-## define lambda and generate noisy data
-gamma = 1; delta = 8
-prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
-prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
-problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa_true, wind_velocity, True)
-lam_true = 1e6
-# initialize vector in the state space
-utrue = problem_true.generate_vector(STATE)
-x = [utrue, true_initial_condition, None]
-# solve forward problem
-problem_true.solveFwd(x[STATE], x)
-# observe solution and add error
-misfit.observe(x, misfit.d)
-noise_std_dev = 1/np.sqrt(lam_true)
-parRandom.normal_perturb(noise_std_dev,misfit.d)
-misfit.noise_variance = noise_std_dev**2
-
-#%%
-
-## find low rank approx
-prelam = max_lam
-misfit.noise_variance = 1/np.sqrt(prelam)**2
-pregamma = None
-predelta = None
-problem = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa, wind_velocity, True)
-pretheta = np.array([pregamma, predelta, prelam])
-H_misfit_only = ReducedHessian(problem, misfit_only=True)
-k = 200
-pad = 10
-Omega = MultiVector(x[PARAMETER], k+pad)
-parRandom.normal(1., Omega)
-lmbda, V = singlePass(H_misfit_only, Omega, k)
-
-## compute posterior
-#lam = lam_true
-l_range = np.linspace(1e5, 10e5, 15)
-for lam in l_range:
-    theta = gamma, delta, lam
-    misfit.noise_variance = 1/np.sqrt(lam)**2
-    posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta)
-    ## compute ||Ax-b||^2
-    # plot posterior mean
-    #nb.plot(dl.Function(Vh,posterior.mean),mytitle='Posterior Mean')
-
-    misfit_postmean = SpaceTimePointwiseStateObservation(Vh, observation_times, targets)
-    problem_postmean = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit_postmean, simulation_times, kappa_true, wind_velocity, True)
-    # initialize vector in the state space
-    u_postmean = problem_postmean.generate_vector(STATE)
-    x = [u_postmean, posterior.mean, None]
-    # solve forward problem
-    problem_postmean.solveFwd(x[STATE], x)
-    # observe solution
-    misfit_postmean.observe(x, misfit_postmean.d)
-    misfit_postmean
-    # compute ||Ax-b||^2
-    diff = misfit_postmean.d.copy()
-    diff.axpy(-1,misfit.d)
-    normsq = diff.inner(diff)
-    print(normsq)
-
-#%%
-nb.plot(dl.Function(Vh,posterior.mean),mytitle='Posterior Mean')
-
-## compute expected value of ||Ax-b||^2
-# %%
-nobs = targets.shape[0]*observation_times.shape[0]
-expected_normsq = nobs/lam_true
-print(expected_normsq)
-# %%
