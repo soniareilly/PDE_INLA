@@ -205,7 +205,7 @@ plt.scatter(targets[:,0],targets[:,1],color='red')
 def ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta):
     '''
     Solve inverse problem
-    Output: posterior object and mg = mu_u0^T Q_u0 + u_d^T Q_eps A
+    Output: posterior object and mg = mu_u0^T Q_u0 + y^T Q_eps A
     Input: mesh and finite element space Vh, 
             lmbda, V: low rank decomp of Q_pre^-1/2 A^T A Q_pre^-1/2, where Q_pre is a preconditioning prior precision
             pretheta = pregamma, predelta: parameters of Q_pre (or "none" if no Q_pre preconditioner), and prelam: noise precision used in low rank approx
@@ -306,7 +306,7 @@ kappa = kappa_true
 
 # %%
 
-# -log pi(theta | u_d) (- log posterior marginal joint pdf of theta)
+# -log pi(theta | y) (- log posterior marginal joint pdf of theta)
 def neglogpi_theta(mesh, Vh, misfit, wind_velocity, lmbda, V, pretheta, kappa, theta):
     pregamma, predelta, prelam = pretheta
     gamma, delta, lam = theta
@@ -425,7 +425,7 @@ lam_idx = 3
 plt.pcolormesh(d_range,g_range,logpi[:,:,lam_idx])
 plt.set_cmap('bone')
 plt.colorbar()
-plt.title(fr'$-log \, \pi(\gamma, \delta, \lambda | u_d), \quad \lambda = {l_range[lam_idx]}$')
+plt.title(fr'$-log \, \pi(\gamma, \delta, \lambda | y), \quad \lambda = {l_range[lam_idx]}$')
 plt.ylabel(r'$\gamma$')
 plt.xlabel(r'$\delta$')
 
@@ -437,8 +437,8 @@ plt.rcParams.update({'font.size': 16})
 plt.set_cmap('bone')
 plt.pcolormesh(d_range,g_range,np.exp(-logpi[:,:,lam_idx]+np.min(logpi[:,:,lam_idx])))
 plt.colorbar()
-# plt.title(r'$\pi(\gamma, \delta | u_d), dofs={0}$'.format(dofs))
-plt.title(r'$\pi(\gamma, \delta, \lambda | u_d)$')
+# plt.title(r'$\pi(\gamma, \delta | y), dofs={0}$'.format(dofs))
+plt.title(r'$\pi(\gamma, \delta, \lambda | y)$')
 plt.ylabel(r'$\gamma$')
 plt.xlabel(r'$\delta$')
 # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
@@ -449,21 +449,21 @@ fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
 plt.plot(l_range,logpi[g_idx,d_idx,:])
 plt.xlabel(r'$\lambda$')
-plt.ylabel(r'$-log \pi(\gamma, \delta, \lambda|u_d)$')
+plt.ylabel(r'$-log \pi(\gamma, \delta, \lambda|y)$')
 
 # %%
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
 plt.plot(l_range,np.exp(-logpi[g_idx,d_idx,:]+np.min(logpi[g_idx,d_idx,:])))
 plt.xlabel(r'$\lambda$')
-plt.ylabel(r'$\pi(\gamma, \delta, \lambda|u_d)$')
+plt.ylabel(r'$\pi(\gamma, \delta, \lambda|y)$')
 
  # %%
 
 plt.pcolormesh(l_range,g_range,logpi[:,d_idx,:])
 plt.set_cmap('bone')
 plt.colorbar()
-plt.title(fr'$-log \, \pi(\gamma, \delta, \lambda | u_d), \quad \delta = {d_range[d_idx]}$')
+plt.title(fr'$-log \, \pi(\gamma, \delta, \lambda | y), \quad \delta = {d_range[d_idx]}$')
 plt.ylabel(r'$\gamma$')
 plt.xlabel(r'$\lambda$')
 
@@ -475,23 +475,26 @@ plt.rcParams.update({'font.size': 16})
 plt.set_cmap('bone')
 plt.pcolormesh(l_range,g_range,np.exp(-logpi[:,d_idx,:]+np.min(logpi[:,d_idx,:])))
 plt.colorbar()
-# plt.title(r'$\pi(\gamma, \delta | u_d), dofs={0}$'.format(dofs))
-plt.title(rf'$\pi(\gamma, \delta, \lambda | u_d), \: \delta = {d_range[d_idx]:.2f}$')
+# plt.title(r'$\pi(\gamma, \delta | y), dofs={0}$'.format(dofs))
+plt.title(rf'$\pi(\gamma, \delta, \lambda | y), \: \delta = {d_range[d_idx]:.2f}$')
 plt.ylabel(r'$\gamma$')
 plt.xlabel(r'$\lambda$')
 # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
 
 # %%
 
-# compute MAP point of pi(theta | u_d)
+# compute MAP point of pi(theta | y)
+opt_start = time.time()
 def neglogpi_helper(theta):
     logpi,det,pri,uQu,muQmu,yQy = neglogpi_theta(mesh, Vh, misfit, wind_velocity, lmbda, V, pretheta, kappa, theta)
     return logpi
 theta0 = np.array([1, 1, 1e6])
 theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',options={'disp':True})
+opt_end = time.time()
+print(f"Optimization time: {opt_end-opt_start} seconds")
 
 theta_MAP = theta_opt.x
-print(theta_MAP)
+print(f"MAP point of pi(theta|y): {theta_MAP}")
 
 # %%
 
@@ -596,29 +599,7 @@ ax.set_ylabel(r'$\delta$')
 ax.set_zlabel(r'$\lambda$')
 ax.set_title('Quadrature Points')
 
-# %%
-# approximate value of pi(theta | data) at MAP point, from Laplace approximation
-scale = np.sqrt(np.linalg.det(Hess_MAP))/2/np.pi
-
-# # %%
-
-# fig = plt.figure(figsize=(10,7.2))
-# plt.rcParams.update({'font.size': 16})
-# plt.set_cmap('bone')
-# # plot scaled pi(gamma, delta | data) with quadrature points
-# plt.pcolormesh(d_range,g_range,np.exp(-logpi+neglogpiMAP)*scale)
-# plt.colorbar()
-# #plt.title('Quadrature points')
-# plt.title(r'$\pi(\gamma, \delta | u_d)$')
-# plt.ylabel(r'$\gamma$')
-# plt.xlabel(r'$\delta$')
-# # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
-# # plt.axis('scaled')
-# # zoom = 20
-# # w, h = fig.get_size_inches()
-# # fig.set_size_inches(w * zoom, h * zoom)
-
-# # %%
+## %%
 
 # # plot scaled pi(gamma, delta | data) with quadrature points
 # fig = plt.figure(figsize=(10,7.2))
@@ -627,29 +608,36 @@ scale = np.sqrt(np.linalg.det(Hess_MAP))/2/np.pi
 # plt.pcolormesh(d_range,g_range,np.exp(-logpi+neglogpiMAP)*scale)
 # plt.colorbar()
 # plt.scatter(quad_points[:,1],quad_points[:,0],color='red',label='quadrature points') 
-# plt.title(r'$\pi(\gamma, \delta | u_d)$')
+# plt.title(r'$\pi(\gamma, \delta | y)$')
 # plt.ylabel(r'$\gamma$')
 # plt.xlabel(r'$\delta$')
 # plt.legend(loc='upper left') #, bbox_to_anchor=(0.9, 0.3))
 # # plt.savefig("quad_points.pdf",bbox_inches='tight', pad_inches=0)
 
-# # %%
-# # check that pi(gamma,delta | data) integrates to ~1 using quadrature
-# # assumes 2D for now
-# d_area = np.sqrt(np.prod(Hinv_lam))*delta_z**2*np.linalg.norm(np.cross(np.append(Hinv_V[0],0),np.append(Hinv_V[1],0)))
-# total = 0
-# for i in range(quad_points.shape[0]):
-#     total += np.exp(-neglogpi_helper(quad_points[i,:])+neglogpiMAP)*scale
-# total*d_area
+#%%
+# precompute pi(theta|y) at quad points and scale to integrate to 1
+# (if not increasing resolution, could store these from earlier)
+pi_theta_quad = np.zeros(quad_points.shape[0])
+for i in range(quad_points.shape[0]):
+    pi_theta_quad[i] = np.exp(-neglogpi_helper(quad_points[i,:])+neglogpiMAP)
+
+# find Z such that 1/Z*pi(theta|y) integrates to ~1 using quadrature
+d_area = np.sqrt(np.prod(Hinv_lam))
+Z = np.sum(pi_theta_quad)*d_area
+# scale evaluations of pi(theta|y)
+pi_theta_quad = pi_theta_quad/Z
 
 # # %%
-# # upgrade to a finer mesh
+
+# ### Upgrade to a finer mesh
 # dofs = 2779
 # mesh = dl.refine( dl.Mesh("adv_diff_dofs_{0}.xml".format(dofs)) )
 # wind_velocity = computeVelocityField(mesh)
 # Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
 
-# true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
+# true_u0_fun = dl.Function(Vh, true_initial_condition) # this does not work
+# # need to find a way to interpolate the initial condition from the earlier mesh
+# true_initial_condition = dl.interpolate(true_u0_fun, Vh).vector()
 # misfit = SpaceTimePointwiseStateObservation(Vh, observation_times, targets)
 
 # dt = dt/2
@@ -672,6 +660,7 @@ scale = np.sqrt(np.linalg.det(Hess_MAP))/2/np.pi
 # x = [utrue, true_initial_condition, None]
 # # solve forward problem
 # problem_true.solveFwd(x[STATE], x)
+# # NEED TO FIX THIS! SHOULDN'T BE REPLACING THE DATA WHEN WE UPGRADE THE MESH
 # # observe solution and add error
 # misfit.observe(x, misfit.d)
 # MAX = misfit.d.norm("linf", "linf")
@@ -689,7 +678,6 @@ scale = np.sqrt(np.linalg.det(Hess_MAP))/2/np.pi
 #     lmbda, V = singlePassG(H_misfit_only, preprior.R, preprior.Rsolver, Omega, k) 
 # else:
 #     lmbda, V = singlePass(H_misfit_only, Omega, k)
-# #     Bhelp = MultiVector(V) # ??
 
 # # overwriting the previous one, now for finer mesh
 # def neglogpi_helper(theta):
@@ -697,26 +685,109 @@ scale = np.sqrt(np.linalg.det(Hess_MAP))/2/np.pi
 #     return logpi
 # neglogpiMAP = neglogpi_helper(theta_MAP)
 
+#%%
+### Compute marginal distribution of QoI that is a linear scalar function of u_0
+## QoI for now is the average of u_0 in part of the domain
 
+# box location
+xmin = 0.25; xmax = 0.5
+ymin = 0.5; ymax = 0.75
+# average function of a box in the domain
+class BoxAverage(dl.UserExpression):
+    def __init__(self, xmin, xmax, ymin, ymax, **kwargs):
+        super().__init__(**kwargs)
+        self.xmin = xmin; self.xmax = xmax
+        self.ymin = ymin; self.ymax = ymax
+    def eval(self, value, x):
+        if xmin < x[0] < xmax and ymin < x[1] < ymax:
+            value[0] = 1.0/(xmax-xmin)/(ymax-ymin)
+        else:
+            value[0] = 0.0
+    def value_shape(self):
+        return ()
 
+# compute average of u0 over a box in the domain
+def QoI(u0):
+    box_avg_expr = BoxAverage(xmin, xmax, ymin, ymax)
+    vec = dl.interpolate(box_avg_expr, Vh)
+    u0fun = dl.Function(Vh,u0)
+    qoi = dl.assemble(dl.inner(u0fun, vec) * dl.dx)
+    return qoi 
 
+# print QoI(constant 1 function) to test error introduced by finite element approx
+testu0 = dl.interpolate(dl.Constant(1), Vh).vector()
+print(f"QoI(constant 1 function) = {QoI(testu0)}")
 
+# apply adjoint of qoi to a scalar
+# in this case, function that is 0 outside of box, averages to input value inside
+def QoIadj(qoi):
+    box_avg_expr = BoxAverage(xmin, xmax, ymin, ymax)
+    vec = dl.interpolate(box_avg_expr, Vh)
+    vec.vector()[:] = vec.vector()[:]*qoi
+    return vec.vector()
 
-### INSERT QOI COMPUTATION HERE
+# return marginal distribution of QoI evaluated at a vector of qoi's
+# (some day make this work for a single scalar qoi too)
+def QoIdist(qoi):
+    output = np.zeros(len(qoi))
+    gauss_evals = np.zeros((len(qoi),quad_points.shape[0]))
+    # for each quadrature point:
+    for idx in range(quad_points.shape[0]):
+        # find Gaussian pi(qoi|theta,y) where theta = the quadrature point
+        theta = quad_points[idx,:]
+        prior = BiLaplacianPrior(Vh, theta[0], theta[1], robin_bc=True)
+        prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
+        posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta)
+        # mean
+        mm = QoI(posterior.mean)
+        # var = QoI(Q_post_inv*QoIadj(1))
+        temp = dl.Vector(posterior.prior.R.mpi_comm())
+        posterior.prior.init_vector(temp,0)
+        posterior.Hlr.solve(temp,QoIadj(1))
+        vv = QoI(temp)
+        # evaluate Gaussian at each qoi value
+        for ii in range(len(qoi)):
+            gauss_evals[ii,idx] = np.exp(-(qoi[ii]-mm)**2/2/vv)/np.sqrt(2*np.pi*vv)
+        # multiply by pi(theta|y) at qpt and area/volume element and add
+        output += d_area*pi_theta_quad[idx]*gauss_evals[:,idx]
+    return output
 
 # %%
-# find pi(x^i|u_d) for each location i in locs at values x_eval of x
-# in this case locations must be integer indices
+
+# evaluate pi(qoi|y) at range of qoi values
+qoi_range = np.linspace(0.0,0.7,20)
+pi_qoi = QoIdist(qoi_range)
+# might want to normalize again here -- this prob does not quite integrate to 1
+
+# true QoI
+true_QoI = QoI(true_initial_condition)
+
+#%%
+# plot distribution of QoI
+plt.figure(figsize=(10,4.5))
+plt.rcParams.update({'font.size': 16})
+plt.plot(qoi_range,pi_qoi,linewidth=3,color='green')
+plt.axvline(x=true_QoI, color='purple', linestyle="-.", label=r"true qoi")
+plt.title(f'Posterior Marginal Distribution of QoI')
+plt.ylabel(r"$\pi(qoi|y)$")
+plt.xlabel(r"$qoi$")
+plt.tight_layout()
+plt.legend()
+
+# %%
+### QoI distribution for when QoI is pointwise evaluation
+## Finds QoI distribution at a list of locations simultaneously (unlike general code above)
+
+# find pi(x^i|y) for each location i in locs at values u_0_eval of u_0
 def posterior_marginals(locs,u_0_eval,quad_points):
     output = np.zeros((len(locs),len(u_0_eval)))
     gauss_evals = np.zeros((len(locs),len(u_0_eval),quad_points.shape[0]))
     for idx in range(quad_points.shape[0]):
-        gamma = quad_points[idx,0]
-        delta = quad_points[idx,1]
-        prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
+        theta = quad_points[idx,:]
+        prior = BiLaplacianPrior(Vh, theta[0], theta[1], robin_bc=True)
         prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
-        posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pregamma, predelta, misfit, simulation_times, kappa, wind_velocity, gamma, delta)
-        # pi(u_0^i|k,u_d)
+        posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta)
+        # pi(u_0^i|theta,y)
         posterior_var,pr,corr = posterior.pointwise_variance(method="Exact")
         mm = dl.Function(Vh,posterior.mean)
         vv = dl.Function(Vh,posterior_var)
@@ -724,11 +795,7 @@ def posterior_marginals(locs,u_0_eval,quad_points):
             for jj in range(len(u_0_eval)):
                 uu = u_0_eval[jj]
                 gauss_evals[ii,jj,idx] = np.exp(-(uu-mm(locs[ii]))**2/2/vv(locs[ii]))/np.sqrt(2*np.pi*vv(locs[ii]))
-        # find pi(gamma, delta|u_d)
-        neglogpi = neglogpi_helper(np.array([gamma,delta]))
-        pi_gamma_delta = np.exp(-(neglogpi - neglogpiMAP))*scale
-        
-        output += d_area*pi_gamma_delta*gauss_evals[:,:,idx]
+        output += d_area*pi_theta_quad[idx]*gauss_evals[:,:,idx]
     return output,gauss_evals
 # %%
 u_range = np.linspace(0.0,0.55,100)
@@ -744,33 +811,18 @@ header = "x \t\t u_0_1 \t\t u_0_2"
 # np.savetxt("images/pi_u_0.txt", np.column_stack((u_range, pi_u_0_i_evals_normalized.T)), delimiter="\t", header=header, fmt='%10.8f', comments="")
 
 # %%
-ii = 0
-
-plt.figure(figsize=(10,4.5))
-plt.rcParams.update({'font.size': 16})
-plt.plot(u_range,pi_u_0_i_evals_normalized[ii,:],linewidth=3,color='green')
-plt.axvline(x=true_u0_fun(locations[ii]), color='purple', linestyle="-.", label=r"true $u_0^i$")
-#plt.ticklabel_format(axis='both', style='sci', scilimits=(0,0))
-plt.title(f'Posterior Marginal Initial Condition, location {locations[ii]}')
-plt.ylabel(r"$\log \pi(u_0^i|u_d)$")
-plt.xlabel(r"$u_0$")
-plt.tight_layout()
-plt.legend()
-#plt.savefig("u_0_marginal.pdf")
-# %%
-ii = 1
-
-plt.figure(figsize=(10,4.5))
-plt.rcParams.update({'font.size': 16})
-plt.plot(u_range,pi_u_0_i_evals_normalized[ii,:],linewidth=3,color='green')
-plt.axvline(x=true_u0_fun(locations[ii]), color='purple', linestyle="-.", label=r"true $u_0^i$")
-#plt.ticklabel_format(axis='both', style='sci', scilimits=(0,0))
-plt.title(f'Posterior Marginal Initial Condition, location {locations[ii]}')
-plt.ylabel(r"$\log \pi(u_0^i|u_d)$")
-plt.xlabel(r"$u_0$")
-plt.tight_layout()
-plt.legend()
-#plt.savefig("u_0_marginal.pdf")
+for ii in range(len(locations)):
+    plt.figure(figsize=(10,4.5))
+    plt.rcParams.update({'font.size': 16})
+    plt.plot(u_range,pi_u_0_i_evals_normalized[ii,:],linewidth=3,color='green')
+    plt.axvline(x=true_u0_fun(locations[ii]), color='purple', linestyle="-.", label=r"true $u_0^i$")
+    #plt.ticklabel_format(axis='both', style='sci', scilimits=(0,0))
+    plt.title(f'Posterior Marginal Initial Condition, location {locations[ii]}')
+    plt.ylabel(r"$\log \pi(u_0^i|y)$")
+    plt.xlabel(r"$u_0$")
+    plt.tight_layout()
+    plt.legend()
+    #plt.savefig("u_0_marginal.pdf")
 
 # %%
 xy = mesh.coordinates()
@@ -784,3 +836,5 @@ plt.legend(loc='upper right', bbox_to_anchor=(0.9, 0.3))
 fig.colorbar(im, pad=0.05)
 # plt.savefig("point_locations.pdf",bbox_inches='tight', pad_inches=0)
 
+
+# %%
