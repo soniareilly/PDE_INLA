@@ -726,6 +726,25 @@ def QoIadj(qoi):
     vec.vector()[:] = vec.vector()[:]*qoi
     return vec.vector()
 
+# find distribution of QoI for fixed theta
+def QoIdist_fixed_theta(qoi,theta):
+    output = np.zeros(len(qoi))
+    # find Gaussian pi(qoi|theta,y)
+    prior = BiLaplacianPrior(Vh, theta[0], theta[1], robin_bc=True)
+    prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
+    posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta)
+    # mean
+    mm = QoI(posterior.mean)
+    # var = QoI(Q_post_inv*QoIadj(1))
+    temp = dl.Vector(posterior.prior.R.mpi_comm())
+    posterior.prior.init_vector(temp,0)
+    posterior.Hlr.solve(temp,QoIadj(1))
+    vv = QoI(temp)
+    # evaluate Gaussian at each qoi value
+    for ii in range(len(qoi)):
+        output[ii] = np.exp(-(qoi[ii]-mm)**2/2/vv)/np.sqrt(2*np.pi*vv)
+    return output
+
 # return marginal distribution of QoI evaluated at a vector of qoi's
 # (some day make this work for a single scalar qoi too)
 def QoIdist(qoi):
@@ -735,19 +754,7 @@ def QoIdist(qoi):
     for idx in range(quad_points.shape[0]):
         # find Gaussian pi(qoi|theta,y) where theta = the quadrature point
         theta = quad_points[idx,:]
-        prior = BiLaplacianPrior(Vh, theta[0], theta[1], robin_bc=True)
-        prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
-        posterior,mg,lmbda_new,V_new = ComputePosterior(mesh, Vh, lmbda, V, pretheta, misfit, simulation_times, kappa, wind_velocity, theta)
-        # mean
-        mm = QoI(posterior.mean)
-        # var = QoI(Q_post_inv*QoIadj(1))
-        temp = dl.Vector(posterior.prior.R.mpi_comm())
-        posterior.prior.init_vector(temp,0)
-        posterior.Hlr.solve(temp,QoIadj(1))
-        vv = QoI(temp)
-        # evaluate Gaussian at each qoi value
-        for ii in range(len(qoi)):
-            gauss_evals[ii,idx] = np.exp(-(qoi[ii]-mm)**2/2/vv)/np.sqrt(2*np.pi*vv)
+        gauss_evals[:,idx] = QoIdist_fixed_theta(qoi,theta)
         # multiply by pi(theta|y) at qpt and area/volume element and add
         output += d_area*pi_theta_quad[idx]*gauss_evals[:,idx]
     return output
@@ -755,9 +762,17 @@ def QoIdist(qoi):
 # %%
 
 # evaluate pi(qoi|y) at range of qoi values
-qoi_range = np.linspace(0.0,0.7,20)
+qoi_range = np.linspace(0.0,0.7,100)
 pi_qoi = QoIdist(qoi_range)
 # might want to normalize again here -- this prob does not quite integrate to 1
+
+#%%
+theta_true = np.array([gamma, delta, lam_true])
+theta_1 = np.array([1, 8, 1.15e6])
+theta_2 = np.array([0.7, 8, 1e6])
+pi_qoi_th_true = QoIdist_fixed_theta(qoi_range, theta_true)
+pi_qoi_th_1 = QoIdist_fixed_theta(qoi_range, theta_1)
+pi_qoi_th_2 = QoIdist_fixed_theta(qoi_range, theta_2)
 
 # true QoI
 true_QoI = QoI(true_initial_condition)
@@ -766,13 +781,30 @@ true_QoI = QoI(true_initial_condition)
 # plot distribution of QoI
 plt.figure(figsize=(10,4.5))
 plt.rcParams.update({'font.size': 16})
-plt.plot(qoi_range,pi_qoi,linewidth=3,color='green')
-plt.axvline(x=true_QoI, color='purple', linestyle="-.", label=r"true qoi")
-plt.title(f'Posterior Marginal Distribution of QoI')
+plt.plot(qoi_range,pi_qoi,linewidth=3,color='black', label=r"marginalized")
+plt.plot(qoi_range,pi_qoi_th_true,linewidth=3,color='green', label=rf"true $\theta = [{theta_true[0]}, {theta_true[1]}, {theta_true[2]:.0e}]$")
+plt.plot(qoi_range,pi_qoi_th_1,linewidth=3,color='red', label=rf"$\theta = [{theta_1[0]}, {theta_1[1]}, {theta_1[2]:.2e}]$")
+plt.plot(qoi_range,pi_qoi_th_2,linewidth=3,color='orange', label=rf"$\theta = [{theta_2[0]}, {theta_2[1]}, {theta_2[2]:.0e}]$")
+plt.axvline(x=true_QoI, color='black', linestyle="-.", label=r"true qoi")
+plt.title(f'Posterior Distribution of QoI')
 plt.ylabel(r"$\pi(qoi|y)$")
-plt.xlabel(r"$qoi$")
+plt.xlabel(r"qoi")
 plt.tight_layout()
 plt.legend()
+
+# plot -log distribution of QoI 
+plt.figure(figsize=(10,4.5))
+plt.rcParams.update({'font.size': 16})
+plt.plot(qoi_range,-np.log(pi_qoi),linewidth=3,color='black', label=r"marginalized")
+plt.plot(qoi_range,-np.log(pi_qoi_th_true),linewidth=3,color='green', label=rf"true $\theta = [{theta_true[0]}, {theta_true[1]}, {theta_true[2]:.0e}]$")
+plt.plot(qoi_range,-np.log(pi_qoi_th_1),linewidth=3,color='red', label=rf"$\theta = [{theta_1[0]}, {theta_1[1]}, {theta_1[2]:.2e}]$")
+plt.plot(qoi_range,-np.log(pi_qoi_th_2),linewidth=3,color='orange', label=rf"$\theta = [{theta_2[0]}, {theta_2[1]}, {theta_2[2]:.0e}]$")
+plt.axvline(x=true_QoI, color='black', linestyle="-.", label=r"true qoi")
+plt.title(f'Posterior Distribution of QoI')
+plt.ylabel(r"$-log \pi(qoi|y)$")
+plt.xlabel(r"qoi")
+plt.tight_layout()
+plt.legend(loc="upper right")
 
 # %%
 ### QoI distribution for when QoI is pointwise evaluation
