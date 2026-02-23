@@ -84,6 +84,14 @@ class Model():
         self.kappa = kappa
         self.wind_velocity = wind_velocity
 
+# Helper function for slicing multivectors
+def mv_k(mv, n):
+    mv_n = MultiVector(mv[0], n)
+    for i in range(n):
+        mv_n[i].zero()
+        mv_n[i].axpy(1.0, mv[i])
+    return mv_n
+
 def ComputePosterior(theta, lmbda, V, pretheta, model):
     '''
     Solve inverse problem
@@ -140,7 +148,7 @@ def ComputePosterior(theta, lmbda, V, pretheta, model):
             preprior.Msolver.solve(Wtemp2[i],Wtemp[i]) # modifies Wtemp2
             preprior.A.mult(Wtemp2[i],W[i]) # modifies W
         H_temp = LowRankOperator(lmbda, W)
-        k = 160 #may want to set this to ~3/4 size of V instead of hardcoding
+        k = V.nvec()
         pad = 20 
         Omega = MultiVector(x[PARAMETER], k+pad)
         parRandom.normal(1., Omega)
@@ -235,7 +243,7 @@ def LowRankApprox(pretheta, k, model):
     problem = TimeDependentAD(model.mesh, [model.Vh,model.Vh,model.Vh], preprior, model.misfit, model.simulation_times, model.kappa, model.wind_velocity, True)
         
     H_misfit_only = ReducedHessian(problem, misfit_only=True)
-    pad = 10
+    pad = 20
     Omega = MultiVector(x[PARAMETER], k+pad)
     parRandom.normal(1., Omega)
 
@@ -244,6 +252,32 @@ def LowRankApprox(pretheta, k, model):
     else:
         lmbda, V = singlePassG(H_misfit_only, preprior.R, preprior.Rsolver, Omega, k) 
     return lmbda, V
+
+# returns errors in posterior covariance for ranks ks, first rank at which error is below threshold,
+# and low rank approximation with rank max(ks)
+def PostCovError(theta, pretheta, truth, truth_norm, ks, threshold, model):
+    lmbda, V = LowRankApprox(pretheta, max(ks), model)
+    errs = np.zeros(len(ks))
+    first_ii = -1
+    for ii in range(len(ks)):
+        k = ks[ii]
+        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda[0:k], mv_k(V,k), pretheta, model)
+        posterior_var,pr,corr = posterior.pointwise_variance(method="Exact")
+        posterior.prior.M.mult(posterior_var,Mvar)
+        diff = posterior_var - truth
+        Mdiff = dl.Vector(posterior.prior.R.mpi_comm())
+        posterior.prior.init_vector(Mdiff,0)
+        posterior.prior.M.mult(diff,Mdiff)
+        errs[ii] = diff.inner(Mdiff)/truth_norm
+        # first rank with error below threshold
+        if first_ii < 0 and errs[ii] < threshold:
+            first_ii = ii
+    if first_ii > 0:
+        min_k = ks[first_ii]
+    else:
+        min_k = None
+        print(f'did not reach threshold before rank {max(ks)}')
+    return errs, min_k, lmbda, V
 
 # average function of a box in the domain
 class BoxAverage(dl.UserExpression):
@@ -345,7 +379,7 @@ gamma = 1.
 delta = 8.
 # covariance C = (delta * I - gamma * Laplacian)^{-2}
 prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
-prior_mean = 0.25 # constant mean
+prior_mean = 0.
 prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
 
 noise = dl.Vector()
@@ -436,8 +470,10 @@ nb.show_solution(Vh, true_initial_condition, utrue, "Solution")
 # %%
 ## Define parameters
 
-# note -- contains the true noise variance. Will be overwritten in computation.
+# note -- contains the true noise variance in misfit. Will be overwritten in computation.
 model = Model(mesh, Vh, misfit, simulation_times, kappa, wind_velocity)
+
+theta = np.array([gamma, delta, lam_true])
 
 # hyperprior parameters (independent gamma distributions in gamma and delta, shifted to start or end at min/max values)
 alpha_del = 1
@@ -452,38 +488,118 @@ max_lam = 1e7
 hyp_pr_params = np.array([alpha_del, alpha_gam, alpha_lam, beta_del, beta_gam, beta_lam, max_del, min_gam, max_lam])
 pretheta = [min_gam, max_del, max_lam]
 
-# %%
-## Find low rank approx of prior-to-posterior update
-
-# precon = True
-k = 200
-
-# if not precon:
-#     pretheta[0] = None; pretheta[1] = None
-
-lmbda_weak, V_weak = LowRankApprox(pretheta, k, model)
-lmbda_unprecon, V_unprecon = LowRankApprox([None, None, pretheta[2]], k, model)
-lmbda_prior, V_prior = LowRankApprox([gamma, delta, lam_true], k, model)
-
-lmbda = lmbda_weak; V = V_weak
-
-
 #%%
+# Plot errors as a function of rank to choose rank (for timing)
 
+# "true" posterior variance
+k = 200
+lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], k, model)
+posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
+Mvar = dl.Vector(posterior.prior.R.mpi_comm())
+posterior.prior.init_vector(Mvar,0)
+posterior.prior.M.mult(posterior_var_true,Mvar)
+var_norm_true = posterior_var_true.inner(Mvar)
+
+# error in posterior variance for various ranks k
+ks = np.arange(15, 100, 1)
+threshold = 1e-3
+errs_prior,k_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
+errs_weak,k_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, ks, threshold, model)
+errs_unprecon,k_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
+
+# Plot spectra of low-rank approx for 3 methods
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
-plt.semilogy(np.arange(1, lmbda_weak.size+1), lmbda_weak, label=fr'weakest, $\lambda$={max_lam:.1e}')
-plt.semilogy(np.arange(1, lmbda_unprecon.size+1), lmbda_unprecon, label='unprecon')
-plt.semilogy(np.arange(1, lmbda_prior.size+1), lmbda_prior, label=f'prior precon, $\lambda$={lam_true:.1e}')
+plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, label=f'unprecon, $\lambda$={max_lam:.1e}')
+plt.semilogy(range(len(lmbda_weak)), lmbda_weak, label=fr'weakest, $\lambda$={max_lam:.1e}')
+plt.semilogy(range(len(lmbda_prior)), lmbda_prior, label=f'prior precon, $\lambda$={lam_true:.1e}')
 plt.title('Spectrum of Low Rank Approx')
 plt.legend()
 
+# Plot error as a function of rank for 3 methods
+fig = plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 16})
+plt.semilogy(ks, errs_unprecon, label='unprecon')
+plt.semilogy(ks, errs_weak, label='weakest precon')
+plt.semilogy(ks, errs_prior, label='prior precon')
+plt.xlabel('rank')
+plt.ylabel('error')
+plt.title('Relative error in pointwise posterior covariance')
+plt.legend()
+
+print(f'k_p = {k_p}, k_w = {k_w}, k_u = {k_u}')
+
+#%% 
+# One figure with multiple error plots
+fig = plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 16})
+plt.semilogy(ks, errs_unprecon, color='green', ls='-', label=r'un, $\theta_1$')
+plt.semilogy(ks, errs_weak, color='orange', ls='-', label=r'weak, $\theta_1$')
+plt.semilogy(ks, errs_prior, color='blue', ls='-', label=r'prior, $\theta_1$')
+
+theta = np.array([0.8,12,1.3e6])
+k = 200
+lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], k, model)
+posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
+Mvar = dl.Vector(posterior.prior.R.mpi_comm())
+posterior.prior.init_vector(Mvar,0)
+posterior.prior.M.mult(posterior_var_true,Mvar)
+var_norm_true = posterior_var_true.inner(Mvar)
+errs_prior,k_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
+errs_weak,k_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, ks, threshold, model)
+errs_unprecon,k_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
+print(f'k_p = {k_p}, k_w = {k_w}, k_u = {k_u}')
+plt.semilogy(ks, errs_unprecon, color='green', ls='--', label=r'un, $\theta_2$')
+plt.semilogy(ks, errs_weak, color='orange', ls='--', label=r'weak, $\theta_2$')
+plt.semilogy(ks, errs_prior, color='blue', ls='--', label=r'prior, $\theta_2$')
+
+theta = np.array([1.4,3,7e5])
+k = 200
+lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], k, model)
+posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
+Mvar = dl.Vector(posterior.prior.R.mpi_comm())
+posterior.prior.init_vector(Mvar,0)
+posterior.prior.M.mult(posterior_var_true,Mvar)
+var_norm_true = posterior_var_true.inner(Mvar)
+errs_prior,k_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
+errs_weak,k_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, ks, threshold, model)
+errs_unprecon,k_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
+print(f'k_p = {k_p}, k_w = {k_w}, k_u = {k_u}')
+plt.semilogy(ks, errs_unprecon, color='green', ls=':', label=r'un, $\theta_3$')
+plt.semilogy(ks, errs_weak, color='orange', ls=':', label=r'weak, $\theta_3$')
+plt.semilogy(ks, errs_prior, color='blue', ls=':', label=r'prior, $\theta_3$')
+
+plt.xlabel('rank')
+plt.ylabel('error')
+plt.title('Relative error in pointwise posterior covariance')
+plt.legend()
 
 # %%
+# Find low rank approx of prior-to-posterior update
+
+precon = 'unprecon'
+
+if precon == 'unprecon':
+    pretheta[0] = None; pretheta[1] = None
+    k = k_u
+elif precon == 'prior':
+    k = k_p
+else:
+    assert precon == 'weakest', 'precon should have value prior, unprecon, or weakest'
+    k = k_w
+
+# %%
+# Compute -log pi for a range of thetas
 compute_start = time.time()
-# plot -log pi for a range of thetas
-nn = 4
-nl = 4
+
+if precon == 'weakest' or precon == 'unprecon':
+    lmbda, V = LowRankApprox(pretheta, k, model)
+
+nn = 10
+nl = 10
 g_range = np.linspace(0.7,1.5,nn)
 d_range = np.linspace(0.1,15,nn)
 l_range = np.linspace(5e5, 1.5e6, nl)
@@ -494,6 +610,9 @@ for i in range(len(g_range)):
         for k in range(len(l_range)):
             #compute -log pi_hat(theta)
             theta = np.array([g_range[i],d_range[j],l_range[k]])
+            if precon == 'prior':
+                pretheta = theta.tolist()
+                lmbda, V = LowRankApprox(pretheta, k, model)
             logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model)
             print('({0},{1},{2})'.format(i,j,k))
 
