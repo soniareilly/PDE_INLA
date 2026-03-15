@@ -113,7 +113,7 @@ def ComputePosterior(theta, lmbda, V, pretheta, model):
     ## Compute the gradient
     [u,m,p] = problem.generate_vector()
     # forward solve
-    problem.solveFwd(u, [u,m,p])
+    problem.solveFwd(u, [u,m,p]) # I think this is actually never used and could be deleted
     # adjoint solve
     problem.solveAdj(p, [u,m,p]) # these last three lines don't use the prior and could be precomputed
     # initialize a vector in the parameter space
@@ -166,7 +166,6 @@ def ComputePosterior(theta, lmbda, V, pretheta, model):
     solver.parameters["print_level"] = -1
     solver.parameters["rel_tolerance"] = 1e-6
     solver.solve(m, -mg)
-    problem.solveFwd(u, [u,m,p])
     posterior.mean = m
     
 #     H = posterior.Hlr
@@ -382,17 +381,17 @@ prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
 prior_mean = 0.
 prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
 
-noise = dl.Vector()
-prior.init_vector(noise,"noise")
-parRandom.normal(1., noise)
-s_prior = dl.Function(Vh, name="sample_prior")
-prior.sample(noise,s_prior.vector())
-true_initial_condition = s_prior.vector()
+# noise = dl.Vector()
+# prior.init_vector(noise,"noise")
+# parRandom.normal(1., noise)
+# s_prior = dl.Function(Vh, name="sample_prior")
+# prior.sample(noise,s_prior.vector())
+# true_initial_condition = s_prior.vector()
 
-# ic_expr = dl.Expression(
-#     'std::min(0.5,std::exp(-100*(std::pow(x[0]-0.35,2) +  std::pow(x[1]-0.7,2))))',
-#     element=Vh.ufl_element())
-# true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
+ic_expr = dl.Expression(
+    'std::min(0.5,std::exp(-100*(std::pow(x[0]-0.35,2) +  std::pow(x[1]-0.7,2))))',
+    element=Vh.ufl_element())
+true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
 
 # %%
 ## Plot initial condition and prior mean
@@ -492,8 +491,8 @@ pretheta = [min_gam, max_del, max_lam]
 # Plot errors as a function of rank to choose rank (for timing)
 
 # "true" posterior variance
-k = 200
-lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], k, model)
+r = 200
+lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
 posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
 posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
 Mvar = dl.Vector(posterior.prior.R.mpi_comm())
@@ -502,104 +501,112 @@ posterior.prior.M.mult(posterior_var_true,Mvar)
 var_norm_true = posterior_var_true.inner(Mvar)
 
 # error in posterior variance for various ranks k
-ks = np.arange(15, 100, 1)
+rs = np.arange(15, 100, 1)
 threshold = 1e-3
-errs_prior,k_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
-errs_weak,k_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, ks, threshold, model)
-errs_unprecon,k_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
+errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
+errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, rs, threshold, model)
+errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
 
+#%%
 # Plot spectra of low-rank approx for 3 methods
 fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, label=f'unprecon, $\lambda$={max_lam:.1e}')
-plt.semilogy(range(len(lmbda_weak)), lmbda_weak, label=fr'weakest, $\lambda$={max_lam:.1e}')
-plt.semilogy(range(len(lmbda_prior)), lmbda_prior, label=f'prior precon, $\lambda$={lam_true:.1e}')
-plt.title('Spectrum of Low Rank Approx')
+plt.rcParams.update({'font.size': 20})
+plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, linewidth=3, label=f'unprecon') #, $\lambda$={max_lam:.1e}')
+plt.semilogy(range(len(lmbda_weak)), lmbda_weak, linewidth=3, label=fr'weakest') #, $\lambda$={max_lam:.1e}')
+plt.semilogy(range(len(lmbda_prior)), lmbda_prior, linewidth=3, label=f'prior precon') #, $\lambda$={lam_true:.1e}')
+# plt.title('Spectrum of Low Rank Approx')
+plt.ylabel(r'$\Lambda_{ii}$')
+plt.xlabel(r'$i$')
 plt.legend()
+plt.savefig("Spectra.pdf")
 
+#%%
 # Plot error as a function of rank for 3 methods
 fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.semilogy(ks, errs_unprecon, label='unprecon')
-plt.semilogy(ks, errs_weak, label='weakest precon')
-plt.semilogy(ks, errs_prior, label='prior precon')
+plt.rcParams.update({'font.size': 20})
+plt.semilogy(rs, errs_unprecon, linewidth=3, label='unprecon')
+plt.semilogy(rs, errs_weak, linewidth=3, label='weakest')
+plt.semilogy(rs, errs_prior, linewidth=3, label='prior precon')
 plt.xlabel('rank')
-plt.ylabel('error')
-plt.title('Relative error in pointwise posterior covariance')
+plt.ylabel(r'relative error in $Q_{post}^{-1}$')
+# plt.title('Relative error in pointwise posterior covariance')
 plt.legend()
+plt.savefig("error_vs_rank.pdf")
 
-print(f'k_p = {k_p}, k_w = {k_w}, k_u = {k_u}')
+# print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
 
 #%% 
-# One figure with multiple error plots
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.semilogy(ks, errs_unprecon, color='green', ls='-', label=r'un, $\theta_1$')
-plt.semilogy(ks, errs_weak, color='orange', ls='-', label=r'weak, $\theta_1$')
-plt.semilogy(ks, errs_prior, color='blue', ls='-', label=r'prior, $\theta_1$')
+# # One figure with multiple error plots
+# fig = plt.figure(figsize=(10,7.2))
+# plt.rcParams.update({'font.size': 16})
+# plt.semilogy(rs, errs_unprecon, color='green', ls='-', label=r'un, $\theta_1$')
+# plt.semilogy(rs, errs_weak, color='orange', ls='-', label=r'weak, $\theta_1$')
+# plt.semilogy(rs, errs_prior, color='blue', ls='-', label=r'prior, $\theta_1$')
 
-theta = np.array([0.8,12,1.3e6])
-k = 200
-lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], k, model)
-posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
-posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
-Mvar = dl.Vector(posterior.prior.R.mpi_comm())
-posterior.prior.init_vector(Mvar,0)
-posterior.prior.M.mult(posterior_var_true,Mvar)
-var_norm_true = posterior_var_true.inner(Mvar)
-errs_prior,k_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
-errs_weak,k_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, ks, threshold, model)
-errs_unprecon,k_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
-print(f'k_p = {k_p}, k_w = {k_w}, k_u = {k_u}')
-plt.semilogy(ks, errs_unprecon, color='green', ls='--', label=r'un, $\theta_2$')
-plt.semilogy(ks, errs_weak, color='orange', ls='--', label=r'weak, $\theta_2$')
-plt.semilogy(ks, errs_prior, color='blue', ls='--', label=r'prior, $\theta_2$')
+# theta = np.array([0.8,12,1.3e6])
+# r = 200
+# lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
+# posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+# posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
+# Mvar = dl.Vector(posterior.prior.R.mpi_comm())
+# posterior.prior.init_vector(Mvar,0)
+# posterior.prior.M.mult(posterior_var_true,Mvar)
+# var_norm_true = posterior_var_true.inner(Mvar)
+# errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
+# errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, rs, threshold, model)
+# errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
+# print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
+# plt.semilogy(rs, errs_unprecon, color='green', ls='--', label=r'un, $\theta_2$')
+# plt.semilogy(rs, errs_weak, color='orange', ls='--', label=r'weak, $\theta_2$')
+# plt.semilogy(rs, errs_prior, color='blue', ls='--', label=r'prior, $\theta_2$')
 
-theta = np.array([1.4,3,7e5])
-k = 200
-lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], k, model)
-posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
-posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
-Mvar = dl.Vector(posterior.prior.R.mpi_comm())
-posterior.prior.init_vector(Mvar,0)
-posterior.prior.M.mult(posterior_var_true,Mvar)
-var_norm_true = posterior_var_true.inner(Mvar)
-errs_prior,k_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
-errs_weak,k_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, ks, threshold, model)
-errs_unprecon,k_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, ks, threshold, model)
-print(f'k_p = {k_p}, k_w = {k_w}, k_u = {k_u}')
-plt.semilogy(ks, errs_unprecon, color='green', ls=':', label=r'un, $\theta_3$')
-plt.semilogy(ks, errs_weak, color='orange', ls=':', label=r'weak, $\theta_3$')
-plt.semilogy(ks, errs_prior, color='blue', ls=':', label=r'prior, $\theta_3$')
+# theta = np.array([1.4,3,7e5])
+# r = 200
+# lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
+# posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+# posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
+# Mvar = dl.Vector(posterior.prior.R.mpi_comm())
+# posterior.prior.init_vector(Mvar,0)
+# posterior.prior.M.mult(posterior_var_true,Mvar)
+# var_norm_true = posterior_var_true.inner(Mvar)
+# errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
+# errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, rs, threshold, model)
+# errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
+# print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
+# plt.semilogy(rs, errs_unprecon, color='green', ls=':', label=r'un, $\theta_3$')
+# plt.semilogy(rs, errs_weak, color='orange', ls=':', label=r'weak, $\theta_3$')
+# plt.semilogy(rs, errs_prior, color='blue', ls=':', label=r'prior, $\theta_3$')
 
-plt.xlabel('rank')
-plt.ylabel('error')
-plt.title('Relative error in pointwise posterior covariance')
-plt.legend()
+# plt.xlabel('rank')
+# plt.ylabel('error')
+# plt.title('Relative error in pointwise posterior covariance')
+# plt.legend()
+
+r_p = 57; r_w = 66; r_u = 84
 
 # %%
 # Find low rank approx of prior-to-posterior update
 
-precon = 'unprecon'
+precon = 'weakest'
 
 if precon == 'unprecon':
     pretheta[0] = None; pretheta[1] = None
-    k = k_u
+    r = r_u
 elif precon == 'prior':
-    k = k_p
+    r = r_p
 else:
     assert precon == 'weakest', 'precon should have value prior, unprecon, or weakest'
-    k = k_w
+    r = r_w
 
 # %%
 # Compute -log pi for a range of thetas
 compute_start = time.time()
 
 if precon == 'weakest' or precon == 'unprecon':
-    lmbda, V = LowRankApprox(pretheta, k, model)
+    lmbda, V = LowRankApprox(pretheta, r, model)
 
-nn = 10
-nl = 10
+nn = 4
+nl = 4
 g_range = np.linspace(0.7,1.5,nn)
 d_range = np.linspace(0.1,15,nn)
 l_range = np.linspace(5e5, 1.5e6, nl)
@@ -612,7 +619,7 @@ for i in range(len(g_range)):
             theta = np.array([g_range[i],d_range[j],l_range[k]])
             if precon == 'prior':
                 pretheta = theta.tolist()
-                lmbda, V = LowRankApprox(pretheta, k, model)
+                lmbda, V = LowRankApprox(pretheta, r, model)
             logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model)
             print('({0},{1},{2})'.format(i,j,k))
 
@@ -903,9 +910,9 @@ pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, boxlims, lmbda, 
 # might want to normalize again here -- this prob does not quite integrate to 1
 
 #%%
-theta_true = np.array([gamma, delta, lam_true])
-theta_1 = np.array([1, 8, 1.15e6])
-theta_2 = np.array([0.7, 8, 1e6])
+theta_true = theta_MAP #np.array([gamma, delta, lam_true])
+theta_1 = theta_of_z([-1, 1, 1]) #np.array([1, 8, 1.15e6])
+theta_2 = theta_of_z([1, -1, -1]) #np.array([0.7, 8, 1e6])
 pi_qoi_th_true = QoIdist_fixed_theta(qoi_range, theta_true, boxlims, lmbda, V, pretheta, model)
 pi_qoi_th_1 = QoIdist_fixed_theta(qoi_range, theta_1, boxlims, lmbda, V, pretheta, model)
 pi_qoi_th_2 = QoIdist_fixed_theta(qoi_range, theta_2, boxlims, lmbda, V, pretheta, model)
@@ -917,30 +924,31 @@ true_QoI = QoI(true_initial_condition, Vh, boxlims)
 # plot distribution of QoI
 plt.figure(figsize=(10,4.5))
 plt.rcParams.update({'font.size': 16})
+plt.plot(qoi_range,pi_qoi_th_true,linewidth=3,color='green', label=rf"$\theta^\ast$") # "true $\theta = [{theta_true[0]}, {theta_true[1]}, {theta_true[2]:.0e}]$")
+plt.plot(qoi_range,pi_qoi_th_1,linewidth=3,color='red', label=rf"weaker $\theta$") # "$\theta = [{theta_1[0]}, {theta_1[1]}, {theta_1[2]:.2e}]$")
+plt.plot(qoi_range,pi_qoi_th_2,linewidth=3,color='orange', label=rf"stronger $\theta$") # "$\theta = [{theta_2[0]}, {theta_2[1]}, {theta_2[2]:.0e}]$")
 plt.plot(qoi_range,pi_qoi,linewidth=3,color='black', label=r"marginalized")
-plt.plot(qoi_range,pi_qoi_th_true,linewidth=3,color='green', label=rf"true $\theta = [{theta_true[0]}, {theta_true[1]}, {theta_true[2]:.0e}]$")
-plt.plot(qoi_range,pi_qoi_th_1,linewidth=3,color='red', label=rf"$\theta = [{theta_1[0]}, {theta_1[1]}, {theta_1[2]:.2e}]$")
-plt.plot(qoi_range,pi_qoi_th_2,linewidth=3,color='orange', label=rf"$\theta = [{theta_2[0]}, {theta_2[1]}, {theta_2[2]:.0e}]$")
 plt.axvline(x=true_QoI, color='black', linestyle="-.", label=r"true qoi")
-plt.title(f'Posterior Distribution of QoI')
-plt.ylabel(r"$\pi(qoi|y)$")
-plt.xlabel(r"qoi")
+plt.title(rf'Posterior Distribution of QoI $q$')
+plt.ylabel(r"$\pi(q|y)$")
+plt.xlabel(r"$q$")
 plt.tight_layout()
 plt.legend()
 
 # plot -log distribution of QoI 
-plt.figure(figsize=(10,4.5))
-plt.rcParams.update({'font.size': 16})
+plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 20})
+plt.plot(qoi_range,-np.log(pi_qoi_th_true),linewidth=3,color='green', label=rf"$\theta^\ast$") # rf"true $\theta = [{theta_true[0]}, {theta_true[1]}, {theta_true[2]:.0e}]$")
+plt.plot(qoi_range,-np.log(pi_qoi_th_1),linewidth=3,color='red', label=rf"$\theta^\ast + [-\sigma_\gamma, \sigma_\delta, \sigma_\lambda]$") #"$\theta = [{theta_1[0]}, {theta_1[1]}, {theta_1[2]:.2e}]$")
+plt.plot(qoi_range,-np.log(pi_qoi_th_2),linewidth=3,color='orange', label=rf"$\theta^\ast + [\sigma_\gamma, -\sigma_\delta, -\sigma_\lambda]$") # "$\theta = [{theta_2[0]}, {theta_2[1]}, {theta_2[2]:.0e}]$")
 plt.plot(qoi_range,-np.log(pi_qoi),linewidth=3,color='black', label=r"marginalized")
-plt.plot(qoi_range,-np.log(pi_qoi_th_true),linewidth=3,color='green', label=rf"true $\theta = [{theta_true[0]}, {theta_true[1]}, {theta_true[2]:.0e}]$")
-plt.plot(qoi_range,-np.log(pi_qoi_th_1),linewidth=3,color='red', label=rf"$\theta = [{theta_1[0]}, {theta_1[1]}, {theta_1[2]:.2e}]$")
-plt.plot(qoi_range,-np.log(pi_qoi_th_2),linewidth=3,color='orange', label=rf"$\theta = [{theta_2[0]}, {theta_2[1]}, {theta_2[2]:.0e}]$")
-plt.axvline(x=true_QoI, color='black', linestyle="-.", label=r"true qoi")
-plt.title(f'Posterior Distribution of QoI')
-plt.ylabel(r"$-log \pi(qoi|y)$")
-plt.xlabel(r"qoi")
+plt.axvline(x=true_QoI, color='black', linestyle="-.", label=r"true $q$")
+# plt.title(rf'Posterior Distribution of QoI $q$')
+plt.ylabel(r"$-\log\, \pi(q|y)$")
+plt.xlabel(r"$q$")
 plt.tight_layout()
-plt.legend(loc="upper right")
+plt.legend(loc="upper left")
+# plt.savefig("QoI_plot.pdf")
 
 # %%
 u_range = np.linspace(0.0,0.55,100)
