@@ -181,7 +181,7 @@ def ComputePosterior(theta, lmbda, V, pretheta, model):
 def neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model):
     pregamma, predelta, prelam = pretheta
     gamma, delta, lam = theta
-    alpha_del, alpha_gam, alpha_lam, beta_del, beta_gam, beta_lam, max_del, min_gam, max_lam = hyp_pr_params
+    min_gam, max_gam, min_del, max_del, min_lam, max_lam = hyp_pr_params
     # compute new posterior
     model.misfit.noise_variance = 1/np.sqrt(lam)**2 # careful, model is mutable
     posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, pretheta, model)
@@ -208,9 +208,9 @@ def neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model):
     det_ratio *= 0.5
 
     # -log pdf of gamma, delta, lambda prior
-    theta_prior = - (alpha_del-1)*np.log(delta) - (alpha_gam-1)*np.log(gamma) + beta_del*delta + beta_gam*gamma - (alpha_lam-1)*np.log(lam) + beta_lam*lam
+    theta_prior = np.log(max_gam-min_gam) + np.log(max_del-min_del) + np.log(max_lam-min_lam)
     # set prior value to 0 outside the domain of the prior (neg log value to large)
-    if gamma < min_gam or delta > max_del or lam > max_lam:
+    if gamma < min_gam or gamma > max_gam or delta < min_del or delta > max_del or lam < min_lam or lam > max_lam:
         theta_prior = 1e30
 
     # -mu_post^T Q_post mu_post 
@@ -373,7 +373,7 @@ Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
 print( "Number of dofs: {0}".format( Vh.dim() ) )
 
 # %%
-## Set up prior and initial condition as a draw from the prior
+## Set up prior (if using prior draw for initial condition)
 gamma = 1.
 delta = 8.
 # covariance C = (delta * I - gamma * Laplacian)^{-2}
@@ -474,64 +474,58 @@ model = Model(mesh, Vh, misfit, simulation_times, kappa, wind_velocity)
 
 theta = np.array([gamma, delta, lam_true])
 
-# hyperprior parameters (independent gamma distributions in gamma and delta, shifted to start or end at min/max values)
-alpha_del = 1
-alpha_gam = 1
-alpha_lam = 1
-beta_del = 1e-4
-beta_gam = 1e-4
-beta_lam = 1e-8
-max_del = 50
-min_gam = 0.2
-max_lam = 1e7
-hyp_pr_params = np.array([alpha_del, alpha_gam, alpha_lam, beta_del, beta_gam, beta_lam, max_del, min_gam, max_lam])
+# hyperprior parameters (independent, uniform in [min,max])
+min_gam = 0.1; max_gam = 50
+min_del = 0.1; max_del = 50
+min_lam = 1e5; max_lam = 1e7
+hyp_pr_params = np.array([min_gam, max_gam, min_del, max_del, min_lam, max_lam])
 pretheta = [min_gam, max_del, max_lam]
 
 #%%
 # Plot errors as a function of rank to choose rank (for timing)
 
-# "true" posterior variance
-r = 200
-lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
-posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
-posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
-Mvar = dl.Vector(posterior.prior.R.mpi_comm())
-posterior.prior.init_vector(Mvar,0)
-posterior.prior.M.mult(posterior_var_true,Mvar)
-var_norm_true = posterior_var_true.inner(Mvar)
+# # "true" posterior variance
+# r = 200
+# lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
+# posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+# posterior_var_true,pr,corr = posterior.pointwise_variance(method="Exact")
+# Mvar = dl.Vector(posterior.prior.R.mpi_comm())
+# posterior.prior.init_vector(Mvar,0)
+# posterior.prior.M.mult(posterior_var_true,Mvar)
+# var_norm_true = posterior_var_true.inner(Mvar)
 
-# error in posterior variance for various ranks k
-rs = np.arange(15, 100, 1)
-threshold = 1e-3
-errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
-errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, rs, threshold, model)
-errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
+# # error in posterior variance for various ranks k
+# rs = np.arange(15, 100, 1)
+# threshold = 1e-3
+# errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
+# errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, posterior_var_true, var_norm_true, rs, threshold, model)
+# errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], posterior_var_true, var_norm_true, rs, threshold, model)
 
 #%%
-# Plot spectra of low-rank approx for 3 methods
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 20})
-plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, linewidth=3, label=f'unprecon') #, $\lambda$={max_lam:.1e}')
-plt.semilogy(range(len(lmbda_weak)), lmbda_weak, linewidth=3, label=fr'weakest') #, $\lambda$={max_lam:.1e}')
-plt.semilogy(range(len(lmbda_prior)), lmbda_prior, linewidth=3, label=f'prior precon') #, $\lambda$={lam_true:.1e}')
-# plt.title('Spectrum of Low Rank Approx')
-plt.ylabel(r'$\Lambda_{ii}$')
-plt.xlabel(r'$i$')
-plt.legend()
-plt.savefig("Spectra.pdf")
+# # Plot spectra of low-rank approx for 3 methods
+# fig = plt.figure(figsize=(10,7.2))
+# plt.rcParams.update({'font.size': 20})
+# plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, linewidth=3, label=f'unprecon') #, $\lambda$={max_lam:.1e}')
+# plt.semilogy(range(len(lmbda_weak)), lmbda_weak, linewidth=3, label=fr'weakest') #, $\lambda$={max_lam:.1e}')
+# plt.semilogy(range(len(lmbda_prior)), lmbda_prior, linewidth=3, label=f'prior precon') #, $\lambda$={lam_true:.1e}')
+# # plt.title('Spectrum of Low Rank Approx')
+# plt.ylabel(r'$\Lambda_{ii}$')
+# plt.xlabel(r'$i$')
+# plt.legend()
+# plt.savefig("Spectra.pdf")
 
 #%%
 # Plot error as a function of rank for 3 methods
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 20})
-plt.semilogy(rs, errs_unprecon, linewidth=3, label='unprecon')
-plt.semilogy(rs, errs_weak, linewidth=3, label='weakest')
-plt.semilogy(rs, errs_prior, linewidth=3, label='prior precon')
-plt.xlabel('rank')
-plt.ylabel(r'relative error in $Q_{post}^{-1}$')
-# plt.title('Relative error in pointwise posterior covariance')
-plt.legend()
-plt.savefig("error_vs_rank.pdf")
+# fig = plt.figure(figsize=(10,7.2))
+# plt.rcParams.update({'font.size': 20})
+# plt.semilogy(rs, errs_unprecon, linewidth=3, label='unprecon')
+# plt.semilogy(rs, errs_weak, linewidth=3, label='weakest')
+# plt.semilogy(rs, errs_prior, linewidth=3, label='prior precon')
+# plt.xlabel('rank')
+# plt.ylabel(r'relative error in $Q_{post}^{-1}$')
+# # plt.title('Relative error in pointwise posterior covariance')
+# plt.legend()
+# plt.savefig("error_vs_rank.pdf")
 
 # print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
 
@@ -607,8 +601,8 @@ if precon == 'weakest' or precon == 'unprecon':
 
 nn = 4
 nl = 4
-g_range = np.linspace(0.7,1.5,nn)
-d_range = np.linspace(0.1,15,nn)
+g_range = np.linspace(0.15,0.75,nn)
+d_range = np.linspace(5,45,nn)
 l_range = np.linspace(5e5, 1.5e6, nl)
 logpi = np.zeros((len(g_range),len(d_range),len(l_range)))
 print('Progress in indices computed from (0,0,0) to ({0},{0},{1}):'.format(nn-1,nl-1))
