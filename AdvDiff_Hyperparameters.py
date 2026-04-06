@@ -242,7 +242,7 @@ def LowRankApprox(pretheta, k, model):
     problem = TimeDependentAD(model.mesh, [model.Vh,model.Vh,model.Vh], preprior, model.misfit, model.simulation_times, model.kappa, model.wind_velocity, True)
         
     H_misfit_only = ReducedHessian(problem, misfit_only=True)
-    pad = 20
+    pad = int(2*k/3)
     Omega = MultiVector(x[PARAMETER], k+pad)
     parRandom.normal(1., Omega)
 
@@ -444,7 +444,7 @@ wind_velocity = computeVelocityField(mesh)
 kappa = 0.001
 problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa, wind_velocity, True)
 
-sigma_true = 1e-3  # true noise stdev
+sigma_true = 1e-2  # true noise stdev
 
 # initialize vector in the state space
 utrue = problem_true.generate_vector(STATE)
@@ -469,9 +469,9 @@ model = Model(mesh, Vh, misfit, simulation_times, kappa, wind_velocity)
 theta = np.array([gamma, delta, sigma_true])
 
 # hyperprior parameters (independent, uniform in [min,max])
-min_gam = 0.005; max_gam = 50
-min_del = 0.1; max_del = 50
-min_sig = 3e-4; max_sig = 1e-2
+min_gam = 0.02; max_gam = 50
+min_del = 1; max_del = 50
+min_sig = 3e-3; max_sig = 1e-1
 hyp_pr_params = np.array([min_gam, max_gam, min_del, max_del, min_sig, max_sig])
 pretheta = [min_gam, 1, 1]
 
@@ -479,13 +479,13 @@ pretheta = [min_gam, 1, 1]
 # Plot errors as a function of rank to choose rank (for timing)
 
 # "true" posterior covariance trace
-r = 200
+r = 300
 lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
 posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
 true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
 
 # error in trace for various ranks k
-rs = np.arange(5, 100, 1)
+rs = np.arange(5, 200, 1)
 threshold = 1e-2
 errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], true_trace, rs, threshold, model)
 errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, true_trace, rs, threshold, model)
@@ -679,7 +679,7 @@ plt.xlabel(r'$\sigma$')
 opt_start = time.time()
 def neglogpi_helper(theta):
     return neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model)
-theta0 = np.array([1, 1, 2e-3])
+theta0 = np.array([1, 1, 8e-3])
 theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',options={'disp':True})
 opt_end = time.time()
 print(f"Optimization time: {opt_end-opt_start} seconds")
@@ -691,7 +691,7 @@ print(f"MAP point of pi(theta|y): {theta_MAP}")
 ## Find inverse Hessian at MAP point
 
 # choosing the finite difference dx's here is finicky -- can't be much smaller
-dtheta = [1e-1,8e-1,1e-4] # test last number options
+dtheta = [1e-1,8e-1,1e-5] # test last number options
 ntheta = np.size(dtheta)
 
 Hess_MAP = np.zeros((ntheta,ntheta))
@@ -881,7 +881,7 @@ plt.legend(loc="upper left")
 # Save data
 header = "q \t\t theta_opt \t\t theta_1 \t\t theta_2 \t\t marginalized \t\t true_QoI"
 true_QoI_vec = np.zeros(qoi_range.shape); true_QoI_vec[0] = true_QoI
-np.savetxt("images/neglogQoI.txt", np.column_stack((qoi_range, -np.log(pi_qoi_th_true), -np.log(pi_qoi_th_1), -np.log(pi_qoi_th_2), -np.log(pi_qoi), true_QoI_vec)), delimiter="\t", header=header, fmt='%10.8f', comments="")
+# np.savetxt("images/neglogQoI.txt", np.column_stack((qoi_range, -np.log(pi_qoi_th_true), -np.log(pi_qoi_th_1), -np.log(pi_qoi_th_2), -np.log(pi_qoi), true_QoI_vec)), delimiter="\t", header=header, fmt='%10.8f', comments="")
 # %%
 u_range = np.linspace(0.0,0.55,100)
 locations = [[0.3,0.7],[0.45,0.55]]
@@ -922,4 +922,4 @@ fig.colorbar(im, pad=0.05)
 # plt.savefig("point_locations.pdf",bbox_inches='tight', pad_inches=0)
 
 
-# %%
+ # %%
