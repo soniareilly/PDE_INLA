@@ -499,7 +499,7 @@ def BiLaplacianPrior(Vh, gamma, delta, Theta = None, mean=None, rel_tol=1e-12, m
         varf_robin = dl.inner(trial,test)*dl.ds
         
         if robin_bc:
-            robin_coeff = gamma*dl.sqrt(delta/gamma)/dl.Constant(1.42)
+            robin_coeff = dl.sqrt(delta*gamma)/dl.Constant(1.42) # rewritten so that gamma=0 does not give nan
         else:
             robin_coeff = dl.Constant(0.)
         

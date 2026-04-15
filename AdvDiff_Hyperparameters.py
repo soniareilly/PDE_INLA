@@ -159,6 +159,7 @@ def ComputePosterior(theta, lmbda, V, pretheta, model):
     posterior = GaussianLRPosterior(prior, lmbda_new, V_new, precon)
 
 #     Compute posterior mean
+#   (Note: this can break if the rank is set too high, because the preconditioner becomes singular)
     H.misfit_only = False
     solver = CGSolverSteihaug()
     solver.set_operator(H) # use lmbda, V plus the prior here?
@@ -470,10 +471,13 @@ theta = np.array([gamma, delta, sigma_true])
 
 # hyperprior parameters (independent, uniform in [min,max])
 min_gam = 0.02; max_gam = 50
-min_del = 1; max_del = 50
+min_del = 1; max_del = 80
 min_sig = 3e-3; max_sig = 1e-1
 hyp_pr_params = np.array([min_gam, max_gam, min_del, max_del, min_sig, max_sig])
 pretheta = [min_gam, 1, 1]
+# %%
+lmbda_weak, V_weak = LowRankApprox(pretheta,50,model)
+
 
 # %%
 # Plot errors as a function of rank to choose rank (for timing)
@@ -489,12 +493,14 @@ rs = np.arange(5, 200, 1)
 threshold = 1e-2
 errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], true_trace, rs, threshold, model)
 errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, true_trace, rs, threshold, model)
-errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [None, None, pretheta[2]], true_trace, rs, threshold, model)
+errs_unprecon_old,r_u_old,lmbda_unprecon_old,V_unprecon_old = PostCovError(theta, [None, None, pretheta[2]], true_trace, rs, threshold, model)
+errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [0.0, pretheta[1], pretheta[2]], true_trace, rs, threshold, model)
 
 # %%
 # Plot spectra of low-rank approx for 3 methods
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 20})
+plt.semilogy(range(len(lmbda_unprecon_old)), lmbda_unprecon_old, linewidth=3, label=f'unprecon_old') #, $\sigma$={min_sig}')
 plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, linewidth=3, label=f'unprecon') #, $\sigma$={min_sig}')
 plt.semilogy(range(len(lmbda_weak)), lmbda_weak, linewidth=3, label=fr'weakest') #, $\sigma$={min_sig}')
 plt.semilogy(range(len(lmbda_prior)), lmbda_prior*(theta[2]**2)*(theta[1]**2), linewidth=3, label=f'prior precon') #, $\sigma$={sigma_true}')
@@ -507,13 +513,14 @@ plt.legend()
 # %%
 # Save data
 header = "r \t\t unprecon \t\t weakest \t\t prior"
-# np.savetxt("images/spectra.txt", np.column_stack((np.arange(1,max(rs)+1,1), lmbda_unprecon, lmbda_weak, lmbda_prior*(theta[2]**2)*(theta[1]**2))), delimiter="\t", header=header, fmt='%10.8f', comments="")
+# np.savetxt("images/spectra.txt", np.column_stack((np.arange(1,max(rs)+1,1), lmbda_unprecon, lmbda_weak, lmbda_prior*(theta[2]**2)*(theta[1]**2))), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
 #%%
 # Plot error as a function of rank for 3 methods
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 20})
 plt.semilogy(rs, errs_unprecon, linewidth=3, label='unprecon')
+plt.semilogy(rs, errs_unprecon_old, linewidth=3, label='unprecon_old')
 plt.semilogy(rs, errs_weak, linewidth=3, label='weakest')
 plt.semilogy(rs, errs_prior, linewidth=3, label='prior precon')
 plt.xlabel('rank')
@@ -526,7 +533,7 @@ print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
 
 # %%
 # Save error data
-# np.savetxt("images/trace_errors.txt", np.column_stack((rs, errs_unprecon, errs_weak, errs_prior)), delimiter="\t", header=header, fmt='%10.8f', comments="")
+# np.savetxt("images/trace_errors.txt", np.column_stack((rs, errs_unprecon, errs_weak, errs_prior)), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
 # %% 
 # # One figure with multiple error plots
@@ -567,7 +574,7 @@ print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
 # plt.title('Relative error in pointwise posterior covariance')
 # plt.legend()
 
-# r_p = 57; r_w = 66; r_u = 84
+r_p = 35; r_w = 38; r_u = 61
 
 # %%
 # Find low rank approx of prior-to-posterior update
@@ -590,11 +597,11 @@ compute_start = time.time()
 if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, model)
 
-nn = 4
-nl = 4
-g_range = np.linspace(0.15,0.75,nn)
-d_range = np.linspace(5,45,nn)
-s_range = np.linspace(5e-4, 1.5e-3, nl)
+nn = 10
+nl = 10
+g_range = np.linspace(0.15,0.6,nn)
+d_range = np.linspace(15,60,nn)
+s_range = np.linspace(7.5e-3, 1.1e-2, nl)
 logpi = np.zeros((len(g_range),len(d_range),len(s_range)))
 print('Progress in indices computed from (0,0,0) to ({0},{0},{1}):'.format(nn-1,nl-1))
 for i in range(len(g_range)):
@@ -611,6 +618,11 @@ for i in range(len(g_range)):
 compute_end = time.time()
 print(f"Compute time: {compute_end-compute_start} seconds")
 
+pitheta = np.exp(-logpi+np.min(logpi))
+#%%
+gmesh,dmesh,smesh = np.meshgrid(g_range, d_range, s_range, indexing='ij')
+header = "gamma \t\t delta \t\t sigma \t\t pi_theta"
+np.savetxt("images/pi_theta.txt", np.column_stack((gmesh.ravel(), dmesh.ravel(), smesh.ravel(), pitheta.ravel())), delimiter="\t", header=header, fmt=('%g', '%g', '%g', '%e'), comments="")
 # %%
 
 sig_idx = 3
