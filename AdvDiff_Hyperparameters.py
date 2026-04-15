@@ -96,15 +96,15 @@ def ComputePosterior(theta, lmbda, V, pretheta, model):
     '''
     Solve inverse problem
     Output: posterior object and mg = mu_u0^T Q_u0 + y^T Q_eps A
-    Input:  theta = gamma, delta: hyperparameters of prior, sigma: noise hyperparameter
+    Input:  theta = eta, delta: hyperparameters of prior, sigma: noise hyperparameter
             lmbda, V: low rank decomp of Q_pre^-1/2 A^T A Q_pre^-1/2, where Q_pre is a preconditioning prior precision
-            pretheta = pregamma, predelta: parameters of Q_pre (or "none" if no Q_pre preconditioner), and presigma: noise stdev used in low rank approx
+            pretheta = preeta, predelta: parameters of Q_pre (or "none" if no Q_pre preconditioner), and presigma: noise stdev used in low rank approx
             model = mesh, Vh, misfit, simulation_times, kappa, and wind_velocity
     '''
-    pregamma, predelta, presigma = pretheta
-    gamma, delta, sigma = theta
+    preeta, predelta, presigma = pretheta
+    eta, delta, sigma = theta
     
-    prior = BiLaplacianPrior(model.Vh, gamma, delta, robin_bc=True)
+    prior = BiLaplacianPrior(model.Vh, eta*delta, delta, robin_bc=True)
     prior.mean = dl.interpolate(dl.Constant(prior_mean), model.Vh).vector()
 
     problem = TimeDependentAD(model.mesh, [model.Vh,model.Vh,model.Vh], prior, model.misfit, model.simulation_times, model.kappa, model.wind_velocity, True)
@@ -126,18 +126,18 @@ def ComputePosterior(theta, lmbda, V, pretheta, model):
     H = ReducedHessian(problem, misfit_only=True) 
     
     # no preconditioning
-    if pregamma is None or predelta is None:
+    if preeta is None or predelta is None:
         precon = False
         lmbda_new = lmbda
         V_new = V
     # prior preconditioning
-    elif pregamma == gamma and predelta == delta:
+    elif preeta == eta and predelta == delta:
         precon = True
         lmbda_new = lmbda
         V_new = V
     # weakest preconditioning
     else:
-        preprior = BiLaplacianPrior(model.Vh, pregamma, predelta, robin_bc=True)
+        preprior = BiLaplacianPrior(model.Vh, preeta*predelta, predelta, robin_bc=True)
         preprior.mean = dl.interpolate(dl.Constant(prior_mean), model.Vh).vector()
         # apply sqrt precon prior precision and sqrt inverse of prior precision
         Wtemp = MultiVector(V)
@@ -177,18 +177,27 @@ def ComputePosterior(theta, lmbda, V, pretheta, model):
     
     return posterior,mg,lmbda_new,V_new
 
+# -log pi(theta), in this case independent uniform distributions on eta, delta, sigma
+def neg_log_hyperprior(theta, hyp_pr_params):
+    min_eta, max_eta, min_del, max_del, min_sig, max_sig = hyp_pr_params
+    eta, delta, sigma = theta
+    theta_prior = np.log(max_eta-min_eta) + np.log(max_del-min_del) + np.log(max_sig-min_sig)
+    # set prior value to 0 outside the domain of the prior (neg log value to large)
+    if eta < min_eta or eta > max_eta or delta < min_del or delta > max_del or sigma < min_sig or sigma > max_sig:
+        theta_prior = 1e30
+    return theta_prior
+
 # -log pi(theta | y) (- log posterior marginal joint pdf of theta)
 # warning: changes noise variance in model.misfit for each theta
 def neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model):
-    pregamma, predelta, presigma = pretheta
-    gamma, delta, sigma = theta
-    min_gam, max_gam, min_del, max_del, min_sig, max_sig = hyp_pr_params
+    preeta, predelta, presigma = pretheta
+    eta, delta, sigma = theta
     # compute new posterior
     model.misfit.noise_variance = sigma**2 # careful, model is mutable
     posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, pretheta, model)
     
     # -log(|Q_pr|/|Q_post|)
-    if pregamma is None or predelta is None:
+    if preeta is None or predelta is None:
         # Bhelp = Q_pr^-1 * V
         Bhelp = MultiVector(V_new)
         for i in range(V_new.nvec()):
@@ -208,11 +217,8 @@ def neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model):
     det_ratio += 2*targets.shape[0]*observation_times.shape[0]*np.log(sigma)
     det_ratio *= 0.5
 
-    # -log pdf of gamma, delta, sigma prior
-    theta_prior = np.log(max_gam-min_gam) + np.log(max_del-min_del) + np.log(max_sig-min_sig)
-    # set prior value to 0 outside the domain of the prior (neg log value to large)
-    if gamma < min_gam or gamma > max_gam or delta < min_del or delta > max_del or sigma < min_sig or sigma > max_sig:
-        theta_prior = 1e30
+    # -log pdf of theta prior
+    theta_prior = neg_log_hyperprior(theta, hyp_pr_params)
 
     # -mu_post^T Q_post mu_post 
     uQu = 0.5*mg.inner(posterior.mean)
@@ -232,13 +238,13 @@ def neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model):
 # no prior preconditioning if pretheta[0] and pretheta[1] are None
 def LowRankApprox(pretheta, k, model):
     # always compute low rank approx using smallest possible noise stdev sigma
-    pregamma, predelta, presigma = pretheta
+    preeta, predelta, presigma = pretheta
     model.misfit.noise_variance = presigma**2
 
-    if pregamma is None or predelta is None:
+    if preeta is None or predelta is None:
         preprior = BiLaplacianPrior(model.Vh, 1., 8., robin_bc=True) # prior is required but not used
     else:
-        preprior = BiLaplacianPrior(model.Vh, pregamma, predelta, robin_bc=True)
+        preprior = BiLaplacianPrior(model.Vh, preeta*predelta, predelta, robin_bc=True)
     preprior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
     problem = TimeDependentAD(model.mesh, [model.Vh,model.Vh,model.Vh], preprior, model.misfit, model.simulation_times, model.kappa, model.wind_velocity, True)
         
@@ -247,7 +253,7 @@ def LowRankApprox(pretheta, k, model):
     Omega = MultiVector(x[PARAMETER], k+pad)
     parRandom.normal(1., Omega)
 
-    if pregamma is None and predelta is None:
+    if preeta is None and predelta is None:
         lmbda, V = singlePass(H_misfit_only, Omega, k)
     else:
         lmbda, V = singlePassG(H_misfit_only, preprior.R, preprior.Rsolver, Omega, k) 
@@ -308,7 +314,7 @@ def QoIadj(qoi, Vh, boxlims):
 def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, pretheta, model):
     output = np.zeros(len(qoi))
     # find Gaussian pi(qoi|theta,y)
-    prior = BiLaplacianPrior(Vh, theta[0], theta[1], robin_bc=True)
+    prior = BiLaplacianPrior(Vh, theta[0]*theta[1], theta[1], robin_bc=True)
     prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
     posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, pretheta, model)
     # mean
@@ -370,10 +376,10 @@ print( "Number of dofs: {0}".format( Vh.dim() ) )
 
 # %%
 ## Set up prior (if using prior draw for initial condition)
-gamma = 1.
+eta = 0.125
 delta = 8.
-# covariance C = (delta * I - gamma * Laplacian)^{-2}
-prior = BiLaplacianPrior(Vh, gamma, delta, robin_bc=True)
+# covariance C = ((delta * (I - eta * Laplacian))^{-2}
+prior = BiLaplacianPrior(Vh, eta*delta, delta, robin_bc=True)
 prior_mean = 0.
 prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
 
@@ -467,69 +473,74 @@ nb.show_solution(Vh, true_initial_condition, utrue, "Solution")
 # note -- contains the true noise variance in misfit. Will be overwritten in computation.
 model = Model(mesh, Vh, misfit, simulation_times, kappa, wind_velocity)
 
-theta = np.array([gamma, delta, sigma_true])
-
 # hyperprior parameters (independent, uniform in [min,max])
-min_gam = 0.02; max_gam = 50
+min_eta = 0.001; max_eta = 10
 min_del = 1; max_del = 80
 min_sig = 3e-3; max_sig = 1e-1
-hyp_pr_params = np.array([min_gam, max_gam, min_del, max_del, min_sig, max_sig])
-pretheta = [min_gam, 1, 1]
-# %%
-lmbda_weak, V_weak = LowRankApprox(pretheta,50,model)
-
+hyp_pr_params = np.array([min_eta, max_eta, min_del, max_del, min_sig, max_sig])
+pretheta = [min_eta, 1, 1]
 
 # %%
-# Plot errors as a function of rank to choose rank (for timing)
+# # Plot errors as a function of rank to choose rank (for timing)
+# theta = np.array([0.2, 30, sigma_true])
 
-# "true" posterior covariance trace
-r = 300
-lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
-posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
-true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
+# # "true" posterior covariance trace
+# r = 300
+# lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
+# posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+# true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
 
-# error in trace for various ranks k
-rs = np.arange(5, 200, 1)
-threshold = 1e-2
-errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], true_trace, rs, threshold, model)
-errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, pretheta, true_trace, rs, threshold, model)
-errs_unprecon_old,r_u_old,lmbda_unprecon_old,V_unprecon_old = PostCovError(theta, [None, None, pretheta[2]], true_trace, rs, threshold, model)
-errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [0.0, pretheta[1], pretheta[2]], true_trace, rs, threshold, model)
+# #%%
+# # error in trace for various ranks k
+# rs = np.arange(5, 200, 1)
+# threshold = 1e-2
+# eta2 = 0.01
+# eta3 = 0.1
+# errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], true_trace, rs, threshold, model)
+# errs_prior2,r_p2,lmbda_prior2,V_prior2 = PostCovError(theta, [eta2, 1.0, 1.0], true_trace, rs, threshold, model)
+# errs_prior3,r_p3,lmbda_prior3,V_prior3 = PostCovError(theta, [eta3, 1.0, 1.0], true_trace, rs, threshold, model)
+# errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, [min_eta, 1.0, 1.0], true_trace, rs, threshold, model)
+# # errs_unprecon_old,r_u_old,lmbda_unprecon_old,V_unprecon_old = PostCovError(theta, [None, None, pretheta[2]], true_trace, rs, threshold, model)
+# errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [0.0, 1.0, 1.0], true_trace, rs, threshold, model)
 
-# %%
-# Plot spectra of low-rank approx for 3 methods
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 20})
-plt.semilogy(range(len(lmbda_unprecon_old)), lmbda_unprecon_old, linewidth=3, label=f'unprecon_old') #, $\sigma$={min_sig}')
-plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, linewidth=3, label=f'unprecon') #, $\sigma$={min_sig}')
-plt.semilogy(range(len(lmbda_weak)), lmbda_weak, linewidth=3, label=fr'weakest') #, $\sigma$={min_sig}')
-plt.semilogy(range(len(lmbda_prior)), lmbda_prior*(theta[2]**2)*(theta[1]**2), linewidth=3, label=f'prior precon') #, $\sigma$={sigma_true}')
-# plt.title('Spectrum of Low Rank Approx')
-plt.ylabel(r'$\Lambda_{ii}$')
-plt.xlabel(r'$i$')
-plt.legend()
-# plt.savefig("Spectra.pdf")
+# # %%
+# # Plot spectra of low-rank approx for 3 methods
+# fig = plt.figure(figsize=(10,7.2))
+# plt.rcParams.update({'font.size': 20})
+# # plt.semilogy(range(len(lmbda_unprecon_old)), lmbda_unprecon_old, linewidth=3, label=f'unprecon_old') #, $\sigma$={min_sig}')
+# plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, linewidth=3, label=rf'$\eta=${0}') #, $\sigma$={min_sig}')
+# plt.semilogy(range(len(lmbda_weak)), lmbda_weak, linewidth=3, label=rf'$\eta=${min_eta}') #, $\sigma$={min_sig}')
+# plt.semilogy(range(len(lmbda_prior)), lmbda_prior*(theta[2]**2)*(theta[1]**2), linewidth=3, label=rf'$\eta=${theta[0]}') #, $\sigma$={sigma_true}')
+# plt.semilogy(range(len(lmbda_prior2)), lmbda_prior2, linewidth=3, label=rf'$\eta=${eta2}') #, $\sigma$={sigma_true}')
+# plt.semilogy(range(len(lmbda_prior3)), lmbda_prior3, linewidth=3, label=rf'$\eta=${eta3}') #, $\sigma$={sigma_true}')
+# # plt.title('Spectrum of Low Rank Approx')
+# plt.ylabel(r'$\Lambda_{ii}$')
+# plt.xlabel(r'$i$')
+# plt.legend()
+# # plt.savefig("Spectra.pdf")
 
-# %%
-# Save data
-header = "r \t\t unprecon \t\t weakest \t\t prior"
-# np.savetxt("images/spectra.txt", np.column_stack((np.arange(1,max(rs)+1,1), lmbda_unprecon, lmbda_weak, lmbda_prior*(theta[2]**2)*(theta[1]**2))), delimiter="\t", header=header, fmt='%10.14f', comments="")
+# # %%
+# # Save data
+# header = "r \t\t unprecon \t\t weakest \t\t prior"
+# # np.savetxt("images/spectra.txt", np.column_stack((np.arange(1,max(rs)+1,1), lmbda_unprecon, lmbda_weak, lmbda_prior*(theta[2]**2)*(theta[1]**2))), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
-#%%
-# Plot error as a function of rank for 3 methods
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 20})
-plt.semilogy(rs, errs_unprecon, linewidth=3, label='unprecon')
-plt.semilogy(rs, errs_unprecon_old, linewidth=3, label='unprecon_old')
-plt.semilogy(rs, errs_weak, linewidth=3, label='weakest')
-plt.semilogy(rs, errs_prior, linewidth=3, label='prior precon')
-plt.xlabel('rank')
-plt.ylabel(r'relative error in $Tr(Q_{post}^{-1})$')
-# plt.title('Relative error in pointwise posterior covariance')
-plt.legend()
-plt.savefig("error_vs_rank.pdf")
+# #%%
+# # Plot error as a function of rank for 3 methods
+# fig = plt.figure(figsize=(10,7.2))
+# plt.rcParams.update({'font.size': 20})
+# plt.semilogy(rs, errs_unprecon, linewidth=3, label=rf'$\eta=${0}')
+# # plt.semilogy(rs, errs_unprecon_old, linewidth=3, label='unprecon_old')
+# plt.semilogy(rs, errs_weak, linewidth=3, label=rf'$\eta=${min_eta}')
+# plt.semilogy(rs, errs_prior, linewidth=3, label=rf'$\eta=${theta[0]}')
+# plt.semilogy(rs, errs_prior2, linewidth=3, label=rf'$\eta=${eta2}')
+# plt.semilogy(rs, errs_prior3, linewidth=3, label=rf'$\eta=${eta3}')
+# plt.xlabel('rank')
+# plt.ylabel(r'relative error in $Tr(Q_{post}^{-1})$')
+# # plt.title('Relative error in pointwise posterior covariance')
+# plt.legend()
+# plt.savefig("error_vs_rank.pdf")
 
-print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
+# print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
 
 # %%
 # Save error data
@@ -582,7 +593,8 @@ r_p = 35; r_w = 38; r_u = 61
 precon = 'weakest'
 
 if precon == 'unprecon':
-    pretheta[0] = None; pretheta[1] = None
+    # pretheta[0] = None; pretheta[1] = None
+    pretheta[0] = 0.0
     r = r_u
 elif precon == 'prior':
     r = r_p
@@ -597,18 +609,18 @@ compute_start = time.time()
 if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, model)
 
-nn = 10
-nl = 10
-g_range = np.linspace(0.15,0.6,nn)
-d_range = np.linspace(15,60,nn)
-s_range = np.linspace(7.5e-3, 1.1e-2, nl)
-logpi = np.zeros((len(g_range),len(d_range),len(s_range)))
+nn = 50
+nl = 50
+eta_range = np.linspace(0.003,0.03,nn)
+d_range = np.linspace(15,45,nn)
+s_range = np.linspace(8e-3, 1.1e-2, nl)
+logpi = np.zeros((len(eta_range),len(d_range),len(s_range)))
 print('Progress in indices computed from (0,0,0) to ({0},{0},{1}):'.format(nn-1,nl-1))
-for i in range(len(g_range)):
+for i in range(len(eta_range)):
     for j in range(len(d_range)):
         for k in range(len(s_range)):
             #compute -log pi_hat(theta)
-            theta = np.array([g_range[i],d_range[j],s_range[k]])
+            theta = np.array([eta_range[i],d_range[j],s_range[k]])
             if precon == 'prior':
                 pretheta = theta.tolist()
                 lmbda, V = LowRankApprox(pretheta, r, model)
@@ -620,17 +632,17 @@ print(f"Compute time: {compute_end-compute_start} seconds")
 
 pitheta = np.exp(-logpi+np.min(logpi))
 #%%
-gmesh,dmesh,smesh = np.meshgrid(g_range, d_range, s_range, indexing='ij')
-header = "gamma \t\t delta \t\t sigma \t\t pi_theta"
-np.savetxt("images/pi_theta.txt", np.column_stack((gmesh.ravel(), dmesh.ravel(), smesh.ravel(), pitheta.ravel())), delimiter="\t", header=header, fmt=('%g', '%g', '%g', '%e'), comments="")
+etamesh,dmesh,smesh = np.meshgrid(eta_range, d_range, s_range, indexing='ij')
+header = "eta \t\t delta \t\t sigma \t\t pi_theta"
+# np.savetxt("images/pi_theta_50x50x50.txt", np.column_stack((etamesh.ravel(), dmesh.ravel(), smesh.ravel(), pitheta.ravel())), delimiter="\t", header=header, fmt=('%g', '%g', '%g', '%e'), comments="")
 # %%
 
 sig_idx = 3
-plt.pcolormesh(d_range,g_range,logpi[:,:,sig_idx])
+plt.pcolormesh(d_range,eta_range,logpi[:,:,sig_idx])
 plt.set_cmap('bone')
 plt.colorbar()
-plt.title(fr'$-log \, \pi(\gamma, \delta, \sigma | y), \quad \sigma = {s_range[sig_idx]}$')
-plt.ylabel(r'$\gamma$')
+plt.title(fr'$-log \, \pi(\eta, \delta, \sigma | y), \quad \sigma = {s_range[sig_idx]}$')
+plt.ylabel(r'$\eta$')
 plt.xlabel(r'$\delta$')
 
 # %%
@@ -639,36 +651,36 @@ plt.xlabel(r'$\delta$')
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
 plt.set_cmap('bone')
-plt.pcolormesh(d_range,g_range,np.exp(-logpi[:,:,sig_idx]+np.min(logpi[:,:,sig_idx])))
+plt.pcolormesh(d_range,eta_range,np.exp(-logpi[:,:,sig_idx]+np.min(logpi[:,:,sig_idx])))
 plt.colorbar()
-# plt.title(r'$\pi(\gamma, \delta | y), dofs={0}$'.format(dofs))
-plt.title(r'$\pi(\gamma, \delta, \sigma | y)$')
-plt.ylabel(r'$\gamma$')
+# plt.title(r'$\pi(\eta, \delta | y), dofs={0}$'.format(dofs))
+plt.title(r'$\pi(\eta, \delta, \sigma | y)$')
+plt.ylabel(r'$\eta$')
 plt.xlabel(r'$\delta$')
 # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
 
 # %%
-g_idx = 3; d_idx = 3
+eta_idx = 3; d_idx = 3
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
-plt.plot(s_range,logpi[g_idx,d_idx,:])
+plt.plot(s_range,logpi[eta_idx,d_idx,:])
 plt.xlabel(r'$\sigma$')
-plt.ylabel(r'$-log \pi(\gamma, \delta, \sigma|y)$')
+plt.ylabel(r'$-log \pi(\eta, \delta, \sigma|y)$')
 
 # %%
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
-plt.plot(s_range,np.exp(-logpi[g_idx,d_idx,:]+np.min(logpi[g_idx,d_idx,:])))
+plt.plot(s_range,np.exp(-logpi[eta_idx,d_idx,:]+np.min(logpi[eta_idx,d_idx,:])))
 plt.xlabel(r'$\sigma$')
-plt.ylabel(r'$\pi(\gamma, \delta, \sigma|y)$')
+plt.ylabel(r'$\pi(\eta, \delta, \sigma|y)$')
 
  # %%
 
-plt.pcolormesh(s_range,g_range,logpi[:,d_idx,:])
+plt.pcolormesh(s_range,eta_range,logpi[:,d_idx,:])
 plt.set_cmap('bone')
 plt.colorbar()
-plt.title(fr'$-log \, \pi(\gamma, \delta, \sigma | y), \quad \delta = {d_range[d_idx]}$')
-plt.ylabel(r'$\gamma$')
+plt.title(fr'$-log \, \pi(\eta, \delta, \sigma | y), \quad \delta = {d_range[d_idx]}$')
+plt.ylabel(r'$\eta$')
 plt.xlabel(r'$\sigma$')
 
 # %%
@@ -677,11 +689,11 @@ plt.xlabel(r'$\sigma$')
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
 plt.set_cmap('bone')
-plt.pcolormesh(s_range,g_range,np.exp(-logpi[:,d_idx,:]+np.min(logpi[:,d_idx,:])))
+plt.pcolormesh(s_range,eta_range,np.exp(-logpi[:,d_idx,:]+np.min(logpi[:,d_idx,:])))
 plt.colorbar()
-# plt.title(r'$\pi(\gamma, \delta | y), dofs={0}$'.format(dofs))
-plt.title(rf'$\pi(\gamma, \delta, \sigma | y), \: \delta = {d_range[d_idx]:.2f}$')
-plt.ylabel(r'$\gamma$')
+# plt.title(r'$\pi(\eta, \delta | y), dofs={0}$'.format(dofs))
+plt.title(rf'$\pi(\eta, \delta, \sigma | y), \: \delta = {d_range[d_idx]:.2f}$')
+plt.ylabel(r'$\eta$')
 plt.xlabel(r'$\sigma$')
 # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
 
@@ -691,7 +703,7 @@ plt.xlabel(r'$\sigma$')
 opt_start = time.time()
 def neglogpi_helper(theta):
     return neglogpi_theta(theta, lmbda, V, pretheta, hyp_pr_params, model)
-theta0 = np.array([1, 1, 8e-3])
+theta0 = np.array([0.1, 10, 8e-3])
 theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',options={'disp':True})
 opt_end = time.time()
 print(f"Optimization time: {opt_end-opt_start} seconds")
@@ -703,7 +715,7 @@ print(f"MAP point of pi(theta|y): {theta_MAP}")
 ## Find inverse Hessian at MAP point
 
 # choosing the finite difference dx's here is finicky -- can't be much smaller
-dtheta = [1e-1,8e-1,1e-5] # test last number options
+dtheta = [1e-3,8e-1,1e-5] # test last number options
 ntheta = np.size(dtheta)
 
 Hess_MAP = np.zeros((ntheta,ntheta))
@@ -795,7 +807,7 @@ quad_points = np.array(quad_points)
 fig = plt.figure(figsize=(10,10))
 ax = fig.add_subplot(projection='3d')
 ax.scatter(quad_points[:,0],quad_points[:,1],quad_points[:,2],color='red',label='quadrature points') 
-ax.set_xlabel(r'$\gamma$')
+ax.set_xlabel(r'$\eta$')
 ax.set_ylabel(r'$\delta$')
 ax.set_zlabel(r'$\sigma$')
 ax.set_title('Quadrature Points')
@@ -849,7 +861,7 @@ pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, boxlims, lmbda, 
 # might want to normalize again here -- this prob does not quite integrate to 1
 
 #%%
-theta_true = theta_MAP #np.array([gamma, delta, sigma_true])
+theta_true = theta_MAP #np.array([eta, delta, sigma_true])
 theta_1 = theta_of_z([-1, 1, 1])
 theta_2 = theta_of_z([1, -1, -1])
 pi_qoi_th_true = QoIdist_fixed_theta(qoi_range, theta_true, boxlims, lmbda, V, pretheta, model)
@@ -878,8 +890,8 @@ plt.legend()
 plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 20})
 plt.plot(qoi_range,-np.log(pi_qoi_th_true),linewidth=3,color='green', label=rf"$\theta^\ast$") # rf"true $\theta = [{theta_true[0]}, {theta_true[1]}, {theta_true[2]:.0e}]$")
-plt.plot(qoi_range,-np.log(pi_qoi_th_1),linewidth=3,color='red', label=rf"$\theta^\ast + [-\sigma_\gamma, \sigma_\delta, \sigma_\sigma]$") #"$\theta = [{theta_1[0]}, {theta_1[1]}, {theta_1[2]:.2e}]$")
-plt.plot(qoi_range,-np.log(pi_qoi_th_2),linewidth=3,color='orange', label=rf"$\theta^\ast + [\sigma_\gamma, -\sigma_\delta, -\sigma_\sigma]$") # "$\theta = [{theta_2[0]}, {theta_2[1]}, {theta_2[2]:.0e}]$")
+plt.plot(qoi_range,-np.log(pi_qoi_th_1),linewidth=3,color='red', label=rf"$\theta^\ast + [-\sigma_\eta, \sigma_\delta, \sigma_\sigma]$") #"$\theta = [{theta_1[0]}, {theta_1[1]}, {theta_1[2]:.2e}]$")
+plt.plot(qoi_range,-np.log(pi_qoi_th_2),linewidth=3,color='orange', label=rf"$\theta^\ast + [\sigma_\eta, -\sigma_\delta, -\sigma_\sigma]$") # "$\theta = [{theta_2[0]}, {theta_2[1]}, {theta_2[2]:.0e}]$")
 plt.plot(qoi_range,-np.log(pi_qoi),linewidth=3,color='black', label=r"marginalized")
 plt.axvline(x=true_QoI, color='black', linestyle="-.", label=r"true $q$")
 # plt.title(rf'Posterior Distribution of QoI $q$')
