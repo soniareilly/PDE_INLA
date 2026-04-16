@@ -474,77 +474,77 @@ nb.show_solution(Vh, true_initial_condition, utrue, "Solution")
 model = Model(mesh, Vh, misfit, simulation_times, kappa, wind_velocity)
 
 # hyperprior parameters (independent, uniform in [min,max])
-min_eta = 0.001; max_eta = 10
+min_eta = 0.003; max_eta = 10
 min_del = 1; max_del = 80
 min_sig = 3e-3; max_sig = 1e-1
 hyp_pr_params = np.array([min_eta, max_eta, min_del, max_del, min_sig, max_sig])
 pretheta = [min_eta, 1, 1]
 
 # %%
-# # Plot errors as a function of rank to choose rank (for timing)
-# theta = np.array([0.2, 30, sigma_true])
+# Plot errors as a function of rank to choose rank (for timing)
+theta = np.array([0.03, 30, sigma_true])
 
-# # "true" posterior covariance trace
-# r = 300
-# lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
-# posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
-# true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
+# "true" posterior covariance trace
+r = 300
+lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
+posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
 
-# #%%
-# # error in trace for various ranks k
-# rs = np.arange(5, 200, 1)
-# threshold = 1e-2
-# eta2 = 0.01
-# eta3 = 0.1
-# errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], true_trace, rs, threshold, model)
-# errs_prior2,r_p2,lmbda_prior2,V_prior2 = PostCovError(theta, [eta2, 1.0, 1.0], true_trace, rs, threshold, model)
-# errs_prior3,r_p3,lmbda_prior3,V_prior3 = PostCovError(theta, [eta3, 1.0, 1.0], true_trace, rs, threshold, model)
-# errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, [min_eta, 1.0, 1.0], true_trace, rs, threshold, model)
-# # errs_unprecon_old,r_u_old,lmbda_unprecon_old,V_unprecon_old = PostCovError(theta, [None, None, pretheta[2]], true_trace, rs, threshold, model)
-# errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [0.0, 1.0, 1.0], true_trace, rs, threshold, model)
+#%%
+# error in trace for various ranks k
+rs = np.arange(5, 200, 1)
+threshold = 1e-2
+eta2 = 0.015
+eta3 = 0.0075
+errs_prior,r_p,lmbda_prior,V_prior = PostCovError(theta, [theta[0], theta[1], theta[2]], true_trace, rs, threshold, model)
+errs_prior2,r_p2,lmbda_prior2,V_prior2 = PostCovError(theta, [eta2, 1.0, 1.0], true_trace, rs, threshold, model)
+errs_prior3,r_p3,lmbda_prior3,V_prior3 = PostCovError(theta, [eta3, 1.0, 1.0], true_trace, rs, threshold, model)
+errs_weak,r_w,lmbda_weak,V_weak = PostCovError(theta, [min_eta, 1.0, 1.0], true_trace, rs, threshold, model)
+# errs_unprecon_old,r_u_old,lmbda_unprecon_old,V_unprecon_old = PostCovError(theta, [None, None, pretheta[2]], true_trace, rs, threshold, model)
+errs_unprecon,r_u,lmbda_unprecon,V_unprecon = PostCovError(theta, [0.0, 1.0, 1.0], true_trace, rs, threshold, model)
 
-# # %%
-# # Plot spectra of low-rank approx for 3 methods
-# fig = plt.figure(figsize=(10,7.2))
-# plt.rcParams.update({'font.size': 20})
-# # plt.semilogy(range(len(lmbda_unprecon_old)), lmbda_unprecon_old, linewidth=3, label=f'unprecon_old') #, $\sigma$={min_sig}')
-# plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, linewidth=3, label=rf'$\eta=${0}') #, $\sigma$={min_sig}')
-# plt.semilogy(range(len(lmbda_weak)), lmbda_weak, linewidth=3, label=rf'$\eta=${min_eta}') #, $\sigma$={min_sig}')
-# plt.semilogy(range(len(lmbda_prior)), lmbda_prior*(theta[2]**2)*(theta[1]**2), linewidth=3, label=rf'$\eta=${theta[0]}') #, $\sigma$={sigma_true}')
-# plt.semilogy(range(len(lmbda_prior2)), lmbda_prior2, linewidth=3, label=rf'$\eta=${eta2}') #, $\sigma$={sigma_true}')
-# plt.semilogy(range(len(lmbda_prior3)), lmbda_prior3, linewidth=3, label=rf'$\eta=${eta3}') #, $\sigma$={sigma_true}')
-# # plt.title('Spectrum of Low Rank Approx')
-# plt.ylabel(r'$\Lambda_{ii}$')
-# plt.xlabel(r'$i$')
-# plt.legend()
-# # plt.savefig("Spectra.pdf")
+# %%
+# Plot spectra of low-rank approx for 3 methods
+fig = plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 20})
+# plt.semilogy(range(len(lmbda_unprecon_old)), lmbda_unprecon_old, linewidth=3, label=f'unprecon_old') #, $\sigma$={min_sig}')
+plt.semilogy(range(len(lmbda_unprecon)), lmbda_unprecon, linewidth=3, label=rf'$\eta=${0}') #, $\sigma$={min_sig}')
+plt.semilogy(range(len(lmbda_weak)), lmbda_weak, linewidth=3, label=rf'$\eta=${min_eta}') #, $\sigma$={min_sig}')
+plt.semilogy(range(len(lmbda_prior)), lmbda_prior*(theta[2]**2)*(theta[1]**2), linewidth=3, label=rf'$\eta=${theta[0]}') #, $\sigma$={sigma_true}')
+plt.semilogy(range(len(lmbda_prior2)), lmbda_prior2, linewidth=3, label=rf'$\eta=${eta2}') #, $\sigma$={sigma_true}')
+plt.semilogy(range(len(lmbda_prior3)), lmbda_prior3, linewidth=3, label=rf'$\eta=${eta3}') #, $\sigma$={sigma_true}')
+# plt.title('Spectrum of Low Rank Approx')
+plt.ylabel(r'$\Lambda_{ii}$')
+plt.xlabel(r'$i$')
+plt.legend()
+# plt.savefig("Spectra.pdf")
 
-# # %%
-# # Save data
-# header = "r \t\t unprecon \t\t weakest \t\t prior"
-# # np.savetxt("images/spectra.txt", np.column_stack((np.arange(1,max(rs)+1,1), lmbda_unprecon, lmbda_weak, lmbda_prior*(theta[2]**2)*(theta[1]**2))), delimiter="\t", header=header, fmt='%10.14f', comments="")
+# %%
+# Save data
+header = "r \t\t unprecon \t\t weakest \t\t prior \t\t prior2 \t\t prior3"
+# np.savetxt("images/spectra3vals.txt", np.column_stack((np.arange(1,max(rs)+1,1), lmbda_unprecon, lmbda_weak, lmbda_prior*(theta[2]**2)*(theta[1]**2), lmbda_prior2, lmbda_prior3)), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
-# #%%
-# # Plot error as a function of rank for 3 methods
-# fig = plt.figure(figsize=(10,7.2))
-# plt.rcParams.update({'font.size': 20})
-# plt.semilogy(rs, errs_unprecon, linewidth=3, label=rf'$\eta=${0}')
-# # plt.semilogy(rs, errs_unprecon_old, linewidth=3, label='unprecon_old')
-# plt.semilogy(rs, errs_weak, linewidth=3, label=rf'$\eta=${min_eta}')
-# plt.semilogy(rs, errs_prior, linewidth=3, label=rf'$\eta=${theta[0]}')
-# plt.semilogy(rs, errs_prior2, linewidth=3, label=rf'$\eta=${eta2}')
-# plt.semilogy(rs, errs_prior3, linewidth=3, label=rf'$\eta=${eta3}')
-# plt.xlabel('rank')
-# plt.ylabel(r'relative error in $Tr(Q_{post}^{-1})$')
-# # plt.title('Relative error in pointwise posterior covariance')
-# plt.legend()
-# plt.savefig("error_vs_rank.pdf")
+#%%
+# Plot error as a function of rank for 3 methods
+fig = plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 20})
+plt.semilogy(rs, errs_unprecon, linewidth=3, label=rf'$\eta=${0}')
+# plt.semilogy(rs, errs_unprecon_old, linewidth=3, label='unprecon_old')
+plt.semilogy(rs, errs_weak, linewidth=3, label=rf'$\eta=${min_eta}')
+plt.semilogy(rs, errs_prior, linewidth=3, label=rf'$\eta=${theta[0]}')
+plt.semilogy(rs, errs_prior2, linewidth=3, label=rf'$\eta=${eta2}')
+plt.semilogy(rs, errs_prior3, linewidth=3, label=rf'$\eta=${eta3}')
+plt.xlabel('rank')
+plt.ylabel(r'relative error in $Tr(Q_{post}^{-1})$')
+# plt.title('Relative error in pointwise posterior covariance')
+plt.legend()
+plt.savefig("error_vs_rank.pdf")
 
-# print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
+print(f'r_p = {r_p}, r_w = {r_w}, r_u = {r_u}')
 
 # %%
 # Save error data
-# np.savetxt("images/trace_errors.txt", np.column_stack((rs, errs_unprecon, errs_weak, errs_prior)), delimiter="\t", header=header, fmt='%10.14f', comments="")
+# np.savetxt("images/trace_errors_3vals.txt", np.column_stack((rs, errs_unprecon, errs_weak, errs_prior, errs_prior2, errs_prior3)), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
 # %% 
 # # One figure with multiple error plots
