@@ -243,9 +243,7 @@ def animate(Vh, state, same_colorbar=True, colorbar=True,
     
     return animation.FuncAnimation(fig, my_animate, np.arange(0, state.nsteps), blit=True)
     
-def coarsen_v(fun, nx = 16, ny = 16):
-    #mesh = dl.UnitSquareMesh(nx,ny) # SWAPPED THESE
-    mesh = dl.Mesh("ad_20.xml")
+def coarsen_v(fun, mesh):
     V_H = dl.VectorFunctionSpace(mesh, "CG", 1)
     dl.parameters['allow_extrapolation'] = True
     fun_H =  dl.interpolate(fun, V_H)
