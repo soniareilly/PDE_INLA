@@ -14,7 +14,7 @@
 # Software Foundation) version 2.0 dated June 1991.
 
 import dolfin as dl
-#import ufl
+import ufl
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
@@ -23,9 +23,6 @@ import sys
 import os
 sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../../") )
 from hippylib import *
-
-# added to replace ufl.min_value
-def Min(a, b): return (a+b-abs(a-b))/dl.Constant(2)
 
 class SpaceTimePointwiseStateObservation(Misfit):
     def __init__(self, Vh,
@@ -129,7 +126,7 @@ class TimeDependentAD:
         h = dl.CellDiameter(mesh)
         vnorm = dl.sqrt(dl.inner(wind_velocity, wind_velocity))
         if gls_stab:
-            tau = Min((h*h)/(dl.Constant(2.)*kappa), h/vnorm )
+            tau = ufl.min_value((h*h)/(dl.Constant(2.)*kappa), h/vnorm )
         else:
             tau = dl.Constant(0.)
                             

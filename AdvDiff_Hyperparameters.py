@@ -1,18 +1,20 @@
 # %%
 
 import dolfin as dl
-#import ufl
+import ufl
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize as opt
 from scipy.integrate import trapezoid
 #%matplotlib inline
+
+#%%
 import sys
 import os
-os.environ["HIPPYLIB_BASE_DIR"] = '/mnt/c/Users/Sonia/Documents/Courant/Research/INLA/PDE_INLA/hippylib'
+os.environ["HIPPYLIB_BASE_DIR"] = '/home/sonia/research/hyperparam_marginal/hippylib'
 sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR') )
-from hippylib import *
 sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR') + "/applications/ad_diff/" )
+from hippylib import *
 from model_ad_diff import SpaceTimePointwiseStateObservation, TimeDependentAD
 
 # modified hippylib code
@@ -20,6 +22,7 @@ from model_ad_diff import SpaceTimePointwiseStateObservation, TimeDependentAD
 # posterior adds version for unpreconditioned low rank decomp
 # prior changes Krylov solvers to LU/Cholesky for speed
 
+#%%
 import logging
 logging.getLogger('FFC').setLevel(logging.WARNING)
 #logging.getLogger('UFL').setLevel(logging.WARNING)
