@@ -1,5 +1,4 @@
 # %%
-
 import dolfin as dl
 import ufl
 import numpy as np
@@ -8,7 +7,6 @@ import scipy.optimize as opt
 from scipy.integrate import trapezoid
 #%matplotlib inline
 
-#%%
 import sys
 import os
 os.environ["HIPPYLIB_BASE_DIR"] = '/home/sonia/research/hyperparam_marginal/hippylib'
@@ -22,7 +20,6 @@ from model_ad_diff import SpaceTimePointwiseStateObservation, TimeDependentAD
 # posterior adds version for unpreconditioned low rank decomp
 # prior changes Krylov solvers to LU/Cholesky for speed
 
-#%%
 import logging
 logging.getLogger('FFC').setLevel(logging.WARNING)
 #logging.getLogger('UFL').setLevel(logging.WARNING)
@@ -35,7 +32,6 @@ np.random.seed(42)
 
 # %%
 
-# All from original AdvectionDiffusionBayesian tutorial
 def v_boundary(x,on_boundary):
     return on_boundary
 
@@ -360,50 +356,68 @@ def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbd
                 gauss_evals[ii,jj,idx] = np.exp(-(uu-mm(locs[ii]))**2/2/vv(locs[ii]))/np.sqrt(2*np.pi*vv(locs[ii]))
         output += d_area*pi_theta_quad[idx]*gauss_evals[:,:,idx]
     return output,gauss_evals
-# %%
-################# PROBLEM SETUP #################
-
-## Import mesh
-
-# number of degrees of freedom in mesh (selects which mesh to import)
-# current options are 253, 399, 557, 605, 729, 1225, 1879, 2363, 2779, 5443, 8335, 11521
-dofs = 729
-mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(dofs)) )
-Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
-print( "Number of dofs: {0}".format( Vh.dim() ) )
 
 # %%
-## Set up prior (if using prior draw for initial condition)
-eta = 0.125
-delta = 8.
-# covariance C = ((delta * (I - eta * Laplacian))^{-2}
-prior = BiLaplacianPrior(Vh, eta*delta, delta, robin_bc=True)
-prior_mean = 0.
-prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
+dim = 3
+# ******************* 2D PROBLEM SETUP ***********************
+if dim == 2:
+    ## Import 2D mesh
+    # number of degrees of freedom in mesh (selects which mesh to import)
+    # current options are 253, 399, 557, 605, 729, 1225, 1879, 2363, 2779, 5443, 8335, 11521
+    dofs = 729
+    mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(dofs)) )
+    Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
+    print( "Number of dofs: {0}".format( Vh.dim() ) )
 
-# noise = dl.Vector()
-# prior.init_vector(noise,"noise")
-# parRandom.normal(1., noise)
-# s_prior = dl.Function(Vh, name="sample_prior")
-# prior.sample(noise,s_prior.vector())
-# true_initial_condition = s_prior.vector()
+    ## Initial Condition
+    ic_expr = dl.Expression(
+        'std::min(0.5,std::exp(-100*(std::pow(x[0]-0.35,2) +  std::pow(x[1]-0.7,2))))',
+        element=Vh.ufl_element())
+    true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
 
-ic_expr = dl.Expression(
-    'std::min(0.5,std::exp(-100*(std::pow(x[0]-0.35,2) +  std::pow(x[1]-0.7,2))))',
-    element=Vh.ufl_element())
-true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
+    ## Advection velocity field
+    wind_velocity = computeVelocityField(mesh)
 
-# %%
-## Plot initial condition and prior mean
+    ## Observation points along building edges
+    targets = np.loadtxt('targets/targets_2d.txt')
 
-objs = [dl.Function(Vh,true_initial_condition),
-        dl.Function(Vh,prior.mean)]
-mytitles = ["True Initial Condition", "Prior mean"]
-nb.multi1_plot(objs, mytitles)
+    # plot initial condtion and target locations
+    nb.plot(dl.Function(Vh,true_initial_condition),mytitle='IC and Sensor Locations')
+    plt.scatter(targets[:,0],targets[:,1],color='red')
 
-# %%
-## Set up and solve forward problem
-    
+# ******************** 3D Problem Setup ****************************
+elif dim == 3:
+    ## Import 3D mesh and advection velocity field (precomputed)
+    dofs = 25101
+
+    mesh = dl.Mesh()
+    hdf = dl.HDF5File(mesh.mpi_comm(), "velocity_fields/velocity_field_{0}.h5".format(dofs), "r")
+    hdf.read(mesh, "/mesh", False)
+    Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
+    Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
+    wind_velocity = dl.Function(Xh)
+    hdf.read(wind_velocity, "/velocity")
+    hdf.close()
+
+    print( "Number of dofs: {0}".format(dofs) )
+
+    ## Initial Condition
+    center = ((0.2,0.8,0.5))
+    width = 25.0
+    cutoff = 0.5
+    ic_expr = dl.Expression(
+        "std::min(cutoff, std::exp(-a * (std::pow(x[0]-x0, 2) + std::pow(x[1]-y0, 2) + std::pow(x[2]-z0, 2))))",
+        a=width, x0=center[0], y0=center[1], z0=center[2], cutoff = 0.5,
+        element=Vh.ufl_element()
+    )
+    true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
+
+    ## Observation points on corners of building tops and halfway down side edges
+    targets = np.loadtxt('targets/targets_3d.txt')
+else:
+    print("Dimension must be 2 or 3")
+
+# %% Solve Forward Problem
 nt = 20
 t_init         = 0.
 t_final        = 4.
@@ -413,38 +427,21 @@ observation_dt = 0.4
 simulation_times = np.arange(t_init, t_final+.5*dt, dt)
 observation_times = np.arange(t_1, t_final+.5*dt, observation_dt)
 
-# # targets along building edges
-# targets = np.loadtxt('targets.txt')
-pts = 4 # number of observation points on each side of the buildings
-targets = np.zeros((8*pts,2))
-targets[0:pts,0] = np.linspace(.25, .5, pts+2)[1:-1]
-targets[0:pts,1] = 0.149
-targets[pts:2*pts,0] = np.linspace(.25, .5, pts+2)[1:-1]
-targets[pts:2*pts,1] = 0.401
-targets[2*pts:3*pts,0] = 0.249
-targets[2*pts:3*pts,1] = np.linspace(.15, .4, pts+2)[1:-1]
-targets[3*pts:4*pts,0] = 0.501
-targets[3*pts:4*pts,1] = np.linspace(.15, .4, pts+2)[1:-1]
-targets[4*pts:5*pts,0] = np.linspace(.6, .75, pts+2)[1:-1]
-targets[4*pts:5*pts,1] = 0.599
-targets[5*pts:6*pts,0] = np.linspace(.6, .75, pts+2)[1:-1]
-targets[5*pts:6*pts,1] = 0.851
-targets[6*pts:7*pts,0] = 0.599
-targets[6*pts:7*pts,1] = np.linspace(.6, .85, pts+2)[1:-1]
-targets[7*pts:8*pts,0] = 0.751
-targets[7*pts:8*pts,1] = np.linspace(.6, .85, pts+2)[1:-1]
-
-# plot target locations
-nb.plot(dl.Function(Vh,true_initial_condition),mytitle='Sensor Locations')
-plt.scatter(targets[:,0],targets[:,1],color='red')
-
 print ("Number of observation points: {0}".format(targets.shape[0]) )
 print ("Number of observation times: {0}".format(observation_times.shape[0]) )
 # initialize observations
 misfit = SpaceTimePointwiseStateObservation(Vh, observation_times, targets)
 
-# initialize problem
-wind_velocity = computeVelocityField(mesh)
+# %%
+## Initialize Problem
+# Set up prior (required by TimeDependentAD but not used)
+eta = 0.125
+delta = 8.
+# covariance C = ((delta * (I - eta * Laplacian))^{-2}
+prior = BiLaplacianPrior(Vh, eta*delta, delta, robin_bc=True)
+prior_mean = 0.
+prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
+
 kappa = 0.001
 problem_true = TimeDependentAD(mesh, [Vh,Vh,Vh], prior, misfit, simulation_times, kappa, wind_velocity, True)
 
@@ -460,9 +457,39 @@ misfit.observe(x, misfit.d)
 parRandom.normal_perturb(sigma_true,misfit.d)
 misfit.noise_variance = sigma_true**2
 
-# plot solution
-nb.show_solution(Vh, true_initial_condition, utrue, "Solution")
-#plt.savefig("forward_solution.pdf",pad_inches=1)
+# %% Plot/save forward solution
+if dim == 2:
+    nb.show_solution(Vh, true_initial_condition, utrue, "Solution")
+elif dim == 3:
+    # 1. Create the XDMF file
+    file_xdmf = dl.XDMFFile(mesh.mpi_comm(), "forward_sol_{0}.xdmf".format(dofs))
+    file_xdmf.parameters["functions_share_mesh"] = True
+    file_xdmf.parameters["rewrite_function_mesh"] = False
+
+    # Create the PVD file
+    file_pvd = dl.File("forward_sol_{0}.pvd".format(dofs))
+
+    # 2. Iterate through the time steps stored in 'x'
+    # x[STATE] is your TimeDependentVector object
+    for i, t in enumerate(simulation_times):
+        u_plot = dl.Function(Vh)
+        
+        # access the .data list directly
+        vec_at_t = x[STATE].data[i]
+        
+        # Copy values into the Function's vector
+        u_plot.vector()[:] = vec_at_t
+        
+        u_plot.rename("concentration", "label")
+        # check that max concentration is decreasing
+        print(f"Time {t}: Max concentration = {vec_at_t.norm('linf')}")
+
+        # Write to PVD - FEniCS handles the time 't' automatically here
+        file_pvd << (u_plot, t)
+        # Write to the file
+        file_xdmf.write(u_plot, t)
+
+    file_xdmf.close()
 
 # %%
 ## Define parameters
@@ -478,14 +505,23 @@ hyp_pr_params = np.array([min_eta, max_eta, min_del, max_del, min_sig, max_sig])
 pretheta = [min_eta, 1, 1]
 
 # %%
-# # Plot errors as a function of rank to choose rank (for timing)
-# theta = np.array([0.03, 30, sigma_true])
+# Plot errors as a function of rank to choose rank (for timing)
+theta = np.array([0.03, 30, sigma_true])
 
-# # "true" posterior covariance trace
-# r = 300
-# lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
-# posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
-# true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
+# "true" posterior covariance trace
+r = 300
+lmbda_prior, V_prior = LowRankApprox([theta[0], theta[1], theta[2]], r, model)
+posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_prior, V_prior, [theta[0], theta[1], theta[2]], model)
+true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
+
+# Plot spectra of low-rank approx for 3 methods
+fig = plt.figure(figsize=(10,7.2))
+plt.rcParams.update({'font.size': 20})
+plt.semilogy(range(len(lmbda_prior)), lmbda_prior*(theta[2]**2)*(theta[1]**2), linewidth=3, label=rf'$\eta=${theta[0]}')
+plt.ylabel(r'$\lambda_i$')
+plt.xlabel(r'$i$')
+plt.legend()
+# plt.savefig("Spectra.pdf")
 
 # #%%
 # # error in trace for various ranks k

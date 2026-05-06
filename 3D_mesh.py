@@ -11,7 +11,7 @@ gmsh.initialize()
 gmsh.model.add("3d_city")
 
 # Set mesh size (characteristic length)
-lc = 0.25e-1 
+lc = 0.33e-1 
 
 # Using OpenCASCADE kernel for easy 3D primitives
 occ = gmsh.model.occ
