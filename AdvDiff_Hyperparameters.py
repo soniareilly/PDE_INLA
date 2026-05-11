@@ -110,11 +110,20 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, model):
     problem.misfit.noise_variance = sigma**2
 
     ## Compute the gradient
+    # p = -A^T Q_eps y
     [u,m,p] = problem.generate_vector()
-    p = neg_adj_y
+    # problem.solveFwd(u,[u,m,p])
+    # problem.solveAdj(p,[u,m,p])
+    # print(p.data[3][0:10])
+    p = neg_adj_y.copy()
+    # print(p.data[3][0:10])
+    for i in range(p.nsteps):
+            p.data[i] *= (presigma**2)/sigma**2
+    # print(p.data[3][0:10])
+    # mg = -Q_pr mu_pr - A^T Q_eps y
     mg = problem.generate_vector(PARAMETER)
-    # evaluate gradient and store in mg
     grad_norm = problem.evalGradientParameter([u,m,p], mg)
+
     ## Compute posterior precision
     # matrix free application of posterior precision/covariance
     H = ReducedHessian(problem, misfit_only=True) 
@@ -332,7 +341,7 @@ def QoIdist(qoi, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_
     for idx in range(quad_points.shape[0]):
         # find Gaussian pi(qoi|theta,y) where theta = the quadrature point
         theta = quad_points[idx,:]
-        gauss_evals[:,idx] = QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, pretheta, model)
+        gauss_evals[:,idx] = QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, model)
         # multiply by pi(theta|y) at qpt and area/volume element and add
         output += d_area*pi_theta_quad[idx]*gauss_evals[:,idx]
     return output
@@ -364,7 +373,7 @@ if dim == 2:
     ## Import 2D mesh
     # number of degrees of freedom in mesh (selects which mesh to import)
     # current options are 253, 399, 557, 605, 729, 1225, 1879, 2363, 2779, 5443, 8335, 11521
-    dofs = 8335 #729
+    dofs = 729
     mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(dofs)) )
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
     print( "Number of dofs: {0}".format( Vh.dim() ) )
@@ -462,35 +471,21 @@ save_fwd_soln_3d = False
 if dim == 2:
     nb.show_solution(Vh, true_initial_condition, utrue, "Solution")
 elif dim == 3 and save_fwd_soln_3d:
-    # 1. Create the XDMF file
-    file_xdmf = dl.XDMFFile(mesh.mpi_comm(), "forward_sol_{0}.xdmf".format(dofs))
-    file_xdmf.parameters["functions_share_mesh"] = True
-    file_xdmf.parameters["rewrite_function_mesh"] = False
-
     # Create the PVD file
     file_pvd = dl.File("forward_sol_{0}.pvd".format(dofs))
-
-    # 2. Iterate through the time steps stored in 'x'
-    # x[STATE] is your TimeDependentVector object
+    # Iterate through the time steps stored in 'x'
+    # x[STATE] is the TimeDependentVector object
     for i, t in enumerate(simulation_times):
         u_plot = dl.Function(Vh)
-        
         # access the .data list directly
         vec_at_t = x[STATE].data[i]
-        
         # Copy values into the Function's vector
         u_plot.vector()[:] = vec_at_t
-        
         u_plot.rename("concentration", "label")
-        # check that max concentration is decreasing
+        # sanity check that max concentration is decreasing
         print(f"Time {t}: Max concentration = {vec_at_t.norm('linf')}")
-
-        # Write to PVD - FEniCS handles the time 't' automatically here
+        # Write to PVD
         file_pvd << (u_plot, t)
-        # Write to the file
-        file_xdmf.write(u_plot, t)
-
-    file_xdmf.close()
 
 # %%
 ## Define parameters
@@ -507,7 +502,10 @@ pretheta = [min_eta, 1, 1]
 
 # %% Precompute -A^T y in MAP point
 problem = TimeDependentAD(model.mesh, [model.Vh,model.Vh,model.Vh], prior, model.misfit, model.simulation_times, model.kappa, model.wind_velocity, True)
+problem.misfit.noise_variance = pretheta[2]
+# This computes -A^T Q_eps y, so -A^T y with sigma = 1
 [u0,m0,neg_adj_y] = problem.generate_vector()
+problem.solveFwd(u0, [u0,m0,neg_adj_y])
 problem.solveAdj(neg_adj_y, [u0,m0,neg_adj_y]) 
 
 # %%
@@ -611,7 +609,7 @@ compute_start = time.time()
 if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, model)
 
-nn = 10
+nn = 1
 ns = 1
 eta_range = np.linspace(0.003,0.03,nn)
 d_range = np.linspace(15,45,nn)
@@ -871,10 +869,10 @@ pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, boxlims, lmbda, 
 
 #%%
 theta_true = theta_MAP #np.array([eta, delta, sigma_true])
-theta_1 = np.array([0.14, 6, 0.01])
-theta_2 =  np.array([0.22, 8, 0.01])
-# theta_1 = np.array([0.0075, 50, 0.01]) #theta_of_z([-1, 1, 0])
-# theta_2 =  np.array([0.03, 12.5, 0.01]) #theta_of_z([1, -1, 0]) 
+# theta_1 = np.array([0.14, 6, 0.01])
+# theta_2 =  np.array([0.22, 8, 0.01])
+theta_1 = np.array([0.0075, 50, 0.01]) #theta_of_z([-1, 1, 0])
+theta_2 =  np.array([0.03, 12.5, 0.01]) #theta_of_z([1, -1, 0]) 
 pi_qoi_th_true = QoIdist_fixed_theta(qoi_range, theta_true, boxlims, lmbda, V, neg_adj_y, pretheta, model)
 pi_qoi_th_1 = QoIdist_fixed_theta(qoi_range, theta_1, boxlims, lmbda, V, neg_adj_y, pretheta, model)
 pi_qoi_th_2 = QoIdist_fixed_theta(qoi_range, theta_2, boxlims, lmbda, V, neg_adj_y, pretheta, model)
