@@ -3,6 +3,7 @@ import dolfin as dl
 import ufl
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import scipy.optimize as opt
 from scipy.integrate import trapezoid
 #%matplotlib inline
@@ -300,18 +301,18 @@ class BoxAverage(dl.UserExpression):
 # compute average of u0 over a box in the domain
 def QoI(u0, Vh, boxlims):
     box_avg_expr = BoxAverage(boxlims)
-    vec = dl.interpolate(box_avg_expr, Vh)
     u0fun = dl.Function(Vh,u0)
-    qoi = dl.assemble(dl.inner(u0fun, vec) * dl.dx)
-    return qoi 
+    return dl.assemble(u0fun * box_avg_expr * dl.dx)
 
 # apply adjoint of qoi to a scalar
 # in this case, function that is 0 outside of box, averages to input value inside
 def QoIadj(qoi, Vh, boxlims):
     box_avg_expr = BoxAverage(boxlims)
-    vec = dl.interpolate(box_avg_expr, Vh)
-    vec.vector()[:] = vec.vector()[:]*qoi
-    return vec.vector()
+    m_test = dl.TestFunction(Vh)
+    L_form = box_avg_expr * m_test * dl.dx
+    b = dl.assemble(L_form)
+    b *= qoi
+    return b
 
 # find distribution of QoI for fixed theta
 def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, model):
@@ -325,8 +326,17 @@ def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, mode
     # var = QoI(Q_post_inv*QoIadj(1))
     temp = dl.Vector(posterior.prior.R.mpi_comm())
     posterior.prior.init_vector(temp,0)
-    posterior.Hlr.solve(temp,QoIadj(1, Vh, boxlims))
-    vv = QoI(temp, Vh, boxlims)
+    problem = TimeDependentAD(model.mesh, [model.Vh,model.Vh,model.Vh], prior, model.misfit, model.simulation_times, model.kappa, model.wind_velocity, True)
+    problem.misfit.noise_variance = theta[2]**2
+    H = ReducedHessian(problem, misfit_only=False) 
+    solver = CGSolverSteihaug()
+    solver.set_operator(H)
+    solver.set_preconditioner( posterior.Hlr )
+    solver.parameters["print_level"] = -1
+    solver.parameters["rel_tolerance"] = 1e-6
+    b = QoIadj(1.0, Vh, boxlims)
+    solver.solve(temp, b)
+    vv = temp.inner(b)
     # evaluate Gaussian at each qoi value
     for ii in range(len(qoi)):
         output[ii] = np.exp(-(qoi[ii]-mm)**2/2/vv)/np.sqrt(2*np.pi*vv)
@@ -373,7 +383,7 @@ if dim == 2:
     ## Import 2D mesh
     # number of degrees of freedom in mesh (selects which mesh to import)
     # current options are 253, 399, 557, 605, 729, 1225, 1879, 2363, 2779, 5443, 8335, 11521
-    dofs = 729
+    dofs = 2363 #729
     mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(dofs)) )
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
     print( "Number of dofs: {0}".format( Vh.dim() ) )
@@ -846,9 +856,13 @@ pi_theta_quad = pi_theta_quad/Z
 
 # box location
 if dim == 2:
-    xmin = 0.25; xmax = 0.5
-    ymin = 0.5; ymax = 0.75
+    xmin = 0.2; xmax = 0.4
+    ymin = 0.7; ymax = 0.9
     boxlims = np.array([xmin, xmax, ymin, ymax])
+    fig, ax = plt.subplots()
+    nb.plot(dl.Function(Vh,true_initial_condition),mytitle='IC and Box Location')
+    rect = Rectangle((xmin, ymin), xmax-xmin, ymax-ymin, edgecolor='red', facecolor='none')
+    ax.add_patch(rect)
 elif dim == 3:
     xmin = 0.15; xmax = 0.3
     ymin = 0.7; ymax = 0.85
@@ -863,16 +877,14 @@ print(f"QoI(constant 1 function) = {QoI(testu0, Vh, boxlims)}")
 # %%
 
 # evaluate pi(qoi|y) at range of qoi values
-qoi_range = np.linspace(0.0,0.7,100)
+qoi_range = np.linspace(0.1,0.275,300)
 pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, model)
 # might want to normalize again here -- this prob does not quite integrate to 1
 
 #%%
-theta_true = theta_MAP #np.array([eta, delta, sigma_true])
-# theta_1 = np.array([0.14, 6, 0.01])
-# theta_2 =  np.array([0.22, 8, 0.01])
-theta_1 = np.array([0.0075, 50, 0.01]) #theta_of_z([-1, 1, 0])
-theta_2 =  np.array([0.03, 12.5, 0.01]) #theta_of_z([1, -1, 0]) 
+theta_true = theta_MAP
+theta_1 = np.array([0.0075, 50, 0.01])
+theta_2 =  np.array([0.03, 12.5, 0.01])
 pi_qoi_th_true = QoIdist_fixed_theta(qoi_range, theta_true, boxlims, lmbda, V, neg_adj_y, pretheta, model)
 pi_qoi_th_1 = QoIdist_fixed_theta(qoi_range, theta_1, boxlims, lmbda, V, neg_adj_y, pretheta, model)
 pi_qoi_th_2 = QoIdist_fixed_theta(qoi_range, theta_2, boxlims, lmbda, V, neg_adj_y, pretheta, model)
@@ -904,25 +916,10 @@ plt.xlabel(r"$q$")
 plt.tight_layout()
 plt.legend()
 
-# # plot -log distribution of QoI 
-# plt.figure(figsize=(10,7.2))
-# plt.rcParams.update({'font.size': 20})
-# plt.plot(qoi_range,-np.log(pi_qoi_th_true),linewidth=3,color='green', label=rf"$\theta^\ast$")
-# plt.plot(qoi_range,-np.log(pi_qoi_th_1),linewidth=3,color='red', label=rf"$\theta_1$")
-# plt.plot(qoi_range,-np.log(pi_qoi_th_2),linewidth=3,color='orange', label=rf"$\theta_2$")
-# plt.plot(qoi_range,-np.log(pi_qoi),linewidth=3,color='black', label=r"marginalized")
-# plt.axvline(x=true_QoI, color='black', linestyle="-.", label=r"true $q$")
-# # plt.title(rf'Posterior Distribution of QoI $q$')
-# plt.ylabel(r"$-\log\, \pi(q|y)$")
-# plt.xlabel(r"$q$")
-# plt.tight_layout()
-# plt.legend(loc="upper left")
-# # plt.savefig("QoI_plot.pdf")
-
 #%%
 # Save data
 header = "q \t\t theta_opt \t\t theta_1 \t\t theta_2 \t\t marginalized"
-# np.savetxt("images/neglogQoI.txt", np.column_stack((qoi_range, -np.log(pi_qoi_th_true), -np.log(pi_qoi_th_1), -np.log(pi_qoi_th_2), -np.log(pi_qoi))), delimiter="\t", header=header, fmt='%10.8f', comments="")
+# np.savetxt("images/piQoI.txt", np.column_stack((qoi_range, pi_qoi_th_true, pi_qoi_th_1, pi_qoi_th_2, pi_qoi)), delimiter="\t", header=header, fmt='%10.8f', comments="")
 # %%
 u_range = np.linspace(0.0,0.55,100)
 locations = [[0.3,0.7],[0.45,0.55]]
