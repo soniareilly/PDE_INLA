@@ -188,12 +188,24 @@ def neg_log_hyperprior(theta, hyp_pr_params):
 
 # -log pi(theta | y) (- log posterior marginal joint pdf of theta)
 # warning: changes noise variance in model.misfit for each theta
-def neglogpi_theta(theta, lmbda, V, neg_adj_y, pretheta, hyp_pr_params, model):
+def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, model):
     preeta, predelta, presigma = pretheta
     eta, delta, sigma = theta
+
+    # make copy of lmbda, V truncated to new theta
+    cutoff = tol*sigma**2*delta**2/presigma**2/predelta**2
+    r_cutoff = np.argmax(lmbda < cutoff)+1
+    if r_cutoff == 0:
+        r_cutoff = lmbda.size
+        print("Approximation is too low rank, cutoff eigval not achieved")
+    lmbda_new = lmbda[0:r_cutoff]
+    V_new = MultiVector(V[0], r_cutoff)
+    for i in range(r_cutoff):
+        V_new[i][:] = V[i]
+
     # compute new posterior
     model.misfit.noise_variance = sigma**2 # careful, model is mutable
-    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, model)
+    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_new, V_new, neg_adj_y, pretheta, model)
     
     # -log(|Q_pr|/|Q_post|)
     if preeta is None or predelta is None:
@@ -235,6 +247,7 @@ def neglogpi_theta(theta, lmbda, V, neg_adj_y, pretheta, hyp_pr_params, model):
 
 # find rank k approx to Hessian preconditioned by prior with params pretheta
 # no prior preconditioning if pretheta[0] and pretheta[1] are None
+# eigvals are lambda/presigma^2/predelta^2, using defn of lambda from paper
 def LowRankApprox(pretheta, k, model):
     # always compute low rank approx using smallest possible noise stdev sigma
     preeta, predelta, presigma = pretheta
@@ -593,13 +606,15 @@ theta = np.array([0.03, 30, sigma_true])
 # Save error data
 # np.savetxt("images/trace_errors_3vals.txt", np.column_stack((rs, errs_unprecon, errs_weak, errs_prior, errs_prior2, errs_prior3)), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
-# r_p = 35; r_w = 38; r_u = 61
-r_w = 80
+r_p = 70; r_w = 152; r_u = 187
 
 # %%
 # Find low rank approx of prior-to-posterior update
 
 precon = 'weakest'
+
+# choose rank r by lambda < tol*sigma^2*delta^2
+tol = 1e-2
 
 if precon == 'unprecon':
     # pretheta[0] = None; pretheta[1] = None
@@ -634,7 +649,7 @@ for i in range(len(eta_range)):
             if precon == 'prior':
                 pretheta = theta.tolist()
                 lmbda, V = LowRankApprox(pretheta, r, model)
-            logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, neg_adj_y, pretheta, hyp_pr_params, model)
+            logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, model)
             print('({0},{1},{2})'.format(i,j,k))
 
 compute_end = time.time()
@@ -712,7 +727,7 @@ plt.xlabel(r'$\sigma$')
 
 opt_start = time.time()
 def neglogpi_helper(theta):
-    return neglogpi_theta(theta, lmbda, V, neg_adj_y, pretheta, hyp_pr_params, model)
+    return neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, model)
 theta0 = np.array([0.1, 10, 8e-3])
 theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',options={'disp':True})
 opt_end = time.time()
@@ -877,7 +892,7 @@ print(f"QoI(constant 1 function) = {QoI(testu0, Vh, boxlims)}")
 # %%
 
 # evaluate pi(qoi|y) at range of qoi values
-qoi_range = np.linspace(0.1,0.275,300)
+qoi_range = np.linspace(0.1,0.275,100)
 pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, model)
 # might want to normalize again here -- this prob does not quite integrate to 1
 
