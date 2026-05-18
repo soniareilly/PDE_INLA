@@ -114,6 +114,7 @@ class TimeDependentAD:
 
         u = dl.TrialFunction(Vh[STATE])
         v = dl.TestFunction(Vh[STATE])
+        m_trial = dl.TrialFunction(Vh[PARAMETER])
         
         #kappa = dl.Constant(.001)
         kappa = dl.Constant(diffusivity)
@@ -132,6 +133,7 @@ class TimeDependentAD:
                             
         self.M = dl.assemble( dl.inner(u,v)*dl.dx )
         self.M_stab = dl.assemble( dl.inner(u, v+tau*r_test)*dl.dx )
+        self.M_stab_mixed = dl.assemble( dl.inner(m_trial, v+tau*r_test)*dl.dx )
         self.Mt_stab = dl.assemble( dl.inner(u+tau*r_trial,v)*dl.dx )
         Nvarf  = (dl.inner(kappa * dl.grad(u), dl.grad(v)) + dl.inner(wind_velocity, dl.grad(u))*v )*dl.dx
         Ntvarf  = (dl.inner(kappa *dl.grad(v), dl.grad(u)) + dl.inner(wind_velocity, dl.grad(v))*u )*dl.dx
@@ -190,16 +192,20 @@ class TimeDependentAD:
     
     def solveFwd(self, out, x):
         out.zero()
-        uold = x[PARAMETER]
         u = dl.Vector()
         rhs = dl.Vector()
         self.M.init_vector(rhs, 0)
         self.M.init_vector(u, 0)
-        for t in self.simulation_times[1::]:
-            self.M_stab.mult(uold, rhs)
+        is_first_step = True
+        for t in self.simulation_times[1:]:
+            if is_first_step:
+                self.M_stab_mixed.mult(x[PARAMETER], rhs)
+                is_first_step = False
+            else:
+                self.M_stab.mult(uold, rhs)
             self.solver.solve(u, rhs)
-            out.store(u,t)
-            uold = u
+            out.store(u, t)
+            uold = u.copy()
     
     def solveAdj(self, out, x):
         
@@ -241,11 +247,14 @@ class TimeDependentAD:
         p0 = dl.Vector()
         self.M.init_vector(p0,0)
         x[ADJOINT].retrieve(p0, self.simulation_times[1])
-        
-        mg.axpy(-1., self.Mt_stab*p0)
+
+        grad_param = dl.Vector()
+        self.prior.init_vector(grad_param, 0)
+        self.M_stab_mixed.transpmult(p0, grad_param)
+        mg.axpy(-1., grad_param)
         
         g = dl.Vector()
-        self.M.init_vector(g,1)
+        self.prior.init_vector(g,1)
         
         self.prior.Msolver.solve(g,mg)
         
@@ -310,7 +319,7 @@ class TimeDependentAD:
         out.zero()
         myout = dl.Vector()
         self.M.init_vector(myout, 0)
-        self.M_stab.mult(dm,myout)
+        self.M_stab_mixed.mult(dm,myout)
         myout *= -1.
         t = self.simulation_times[1]
         out.store(myout,t)
@@ -325,7 +334,7 @@ class TimeDependentAD:
         self.M.init_vector(dp0,0)
         dp.retrieve(dp0, t)
         dp0 *= -1.
-        self.Mt_stab.mult(dp0, out)
+        self.M_stab_mixed.transpmult(dp0, out)
 
     
     def applyWuu(self, du, out):
