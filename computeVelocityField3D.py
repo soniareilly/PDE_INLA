@@ -86,7 +86,7 @@ def computeVelocityField(mesh):
 
 
 # %% Load the mesh
-dofs = 1281
+dofs = 3574
 mesh = dl.Mesh("meshes/cube_3d_dofs_{0}.xml".format(dofs))
 V = dl.FunctionSpace(mesh, "Lagrange", 1)
 
@@ -100,17 +100,16 @@ velocity.rename("velocity", "velocity")
 
 #%%
 # Save for Paraview
-file = dl.File("velocity_field_{0}.pvd".format(dofs))
+file = dl.File("velocity_fields/velocity_field_{0}.pvd".format(dofs))
 file << velocity
 
 # Save in HDF5
-filename = "velocity_field_{0}.h5".format(dofs)
+filename = "velocity_fields/velocity_field_{0}.h5".format(dofs)
 # If the file exists, remove it first to ensure a fresh start
 if os.path.exists(filename):
     try:
         os.remove(filename)
     except OSError:
-        # If this fails, the file is definitely locked by another process
         print("Warning: File is locked. Try a different filename.")
 # The 'with' block automatically handles f.close() for you
 with dl.HDF5File(mesh.mpi_comm(), filename, "w") as f:
@@ -124,7 +123,7 @@ dl.File("velocity_field_{0}.xml".format(dofs)) << velocity
 # Save exterior surface of mesh for Paraview
 boundary_mesh = dl.BoundaryMesh(mesh, "exterior")
 
-boundary_file = dl.File("domain_boundary_{0}.pvd".format(dofs))
+boundary_file = dl.File("velocity_fields/domain_boundary_{0}.pvd".format(dofs))
 boundary_file << boundary_mesh
 
 # %%

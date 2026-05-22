@@ -18,6 +18,7 @@ from model_ad_diff import SpaceTimePointwiseStateObservation, TimeDependentAD
 
 # modified hippylib code
 # model_ad_diff makes kappa no longer hardcoded
+# and adds support for different state and parameter function spaces
 # posterior adds version for unpreconditioned low rank decomp
 # prior changes Krylov solvers to LU/Cholesky for speed
 
@@ -182,7 +183,7 @@ def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, arg
     # make copy of lmbda, V truncated to new theta
     cutoff = tol*sigma**2*delta**2/presigma**2/predelta**2
     r_cutoff = np.argmax(lmbda < cutoff)+1
-    if r_cutoff == 0:
+    if r_cutoff == 1:
         r_cutoff = lmbda.size
         print("Approximation is too low rank, cutoff eigval not achieved")
     lmbda_new = lmbda[0:r_cutoff]
@@ -356,18 +357,19 @@ def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbd
     return output,gauss_evals
 
 # %%
-dim = 2
-# ******************* 2D PROBLEM SETUP ***********************
+dim = 3
+# ******************** 2D Problem Setup ****************************
 if dim == 2:
     ## Import 2D mesh
-    # number of degrees of freedom in mesh (selects which mesh to import)
+    # number of vertices in mesh (selects which mesh to import)
     # current options are 253, 399, 557, 605, 729, 1225, 1879, 2363, 2779, 5443, 8335, 11521
-    dofs = 2363 #729
-    mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(dofs)) )
+    verts = 2363
+    mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(verts)) )
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
     Vh2 = dl.FunctionSpace(mesh, "Lagrange", 2)
-    print( "Number of dofs, first order: {0}".format( Vh.dim() ) )
-    print( "Number of dofs, second order: {0}".format( Vh2.dim() ) )
+    print("Number of elements: {0}".format(mesh.num_cells()))
+    print("Number of dofs, first order: {0}".format(Vh.dim()))
+    print("Number of dofs, second order: {0}".format(Vh2.dim()))
 
     ## Initial Condition
     ic_expr = dl.Expression(
@@ -381,29 +383,37 @@ if dim == 2:
     ## Observation points along building edges
     targets = np.loadtxt('targets/targets_2d.txt')
 
-    # plot initial condtion and target locations
-    nb.plot(dl.Function(Vh,true_initial_condition),mytitle='IC and Sensor Locations')
-    plt.scatter(targets[:,0],targets[:,1],color='red')
+    # # plot initial condtion and target locations
+    # Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
+    # smaller_mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(557)) )
+    # vh = dl.project(wind_velocity,Xh)
+    # nb.plot(nb.coarsen_v(vh, smaller_mesh))
+    # # nb.plot(dl.Function(Vh,true_initial_condition),mytitle='IC and Sensor Locations')
+    # plt.scatter(targets[:,0],targets[:,1],color='red')
+    # plt.savefig("images/velocity_and_targets.pdf",bbox_inches='tight', pad_inches=0)
 
 # ******************** 3D Problem Setup ****************************
 elif dim == 3:
     ## Import 3D mesh and advection velocity field (precomputed)
-    dofs = 7480
+    verts = 1281
 
     mesh = dl.Mesh()
-    hdf = dl.HDF5File(mesh.mpi_comm(), "velocity_fields/velocity_field_{0}.h5".format(dofs), "r")
+    hdf = dl.HDF5File(mesh.mpi_comm(), "velocity_fields/velocity_field_{0}.h5".format(verts), "r")
     hdf.read(mesh, "/mesh", False)
     Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
+    Vh2 = dl.FunctionSpace(mesh, "Lagrange", 2)
+    print("Number of elements: {0}".format(mesh.num_cells()))
+    print("Number of dofs, first order: {0}".format(Vh.dim()))
+    print("Number of dofs, second order: {0}".format(Vh2.dim()))
+
     wind_velocity = dl.Function(Xh)
     hdf.read(wind_velocity, "/velocity")
     hdf.close()
 
-    print( "Number of dofs: {0}".format(dofs) )
-
     ## Initial Condition
-    center = ((0.2,0.8,0.5))
-    width = 25.0
+    center = ((0.15,0.85,0.7))
+    width = 50.0
     cutoff = 0.5
     ic_expr = dl.Expression(
         "std::min(cutoff, std::exp(-a * (std::pow(x[0]-x0, 2) + std::pow(x[1]-y0, 2) + std::pow(x[2]-z0, 2))))",
@@ -412,13 +422,13 @@ elif dim == 3:
     )
     true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
 
-    ## Observation points on corners of building tops and halfway down side edges
+    ## Observation points
     targets = np.loadtxt('targets/targets_3d.txt')
 else:
     print("Dimension must be 2 or 3")
 
 # %% Solve Forward Problem
-nt = 80
+nt = 20
 t_init         = 0.
 t_final        = 4.
 t_1            = 2.4
@@ -443,7 +453,10 @@ prior = BiLaplacianPrior(Vh, eta*delta, delta, robin_bc=True)
 prior_mean = 0.
 prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
 
-kappa = 0.001
+if dim == 2:
+    kappa = 0.001
+elif dim == 3:
+    kappa = 0.003
 problem_true = TimeDependentAD(mesh, [Vh2,Vh,Vh2], prior, misfit, simulation_times, kappa, wind_velocity, True)
 sigma_true = 1e-2  # true noise stdev
 
@@ -467,10 +480,10 @@ if dim == 2:
     ic_func = dl.Function(Vh)
     ic_func.vector()[:] = true_initial_condition
     ic_Vh2 = dl.project(ic_func, Vh2).vector()
-    nb.show_solution(Vh2, ic_Vh2, utrue, "Solution")
+    # nb.show_solution(Vh2, ic_Vh2, utrue, "Solution")
 elif dim == 3 and save_fwd_soln_3d:
     # Create the PVD file
-    file_pvd = dl.File("forward_sol_{0}.pvd".format(dofs))
+    file_pvd = dl.File("forward_sol_{0}.pvd".format(verts))
     # Iterate through the time steps stored in 'x'
     # x[STATE] is the TimeDependentVector object
     for i, t in enumerate(simulation_times):
@@ -490,7 +503,11 @@ elif dim == 3 and save_fwd_soln_3d:
 args = Args(mesh, Vh2, Vh, misfit, simulation_times, kappa, wind_velocity)
 
 # hyperprior parameters (independent, uniform in [min,max])
-min_eta = 0.0015; max_eta = 10
+if dim == 2:
+    min_eta = 0.0015
+elif dim == 3:
+    min_eta = 0.02
+max_eta = 10
 min_del = 1; max_del = 100
 min_sig = 3e-3; max_sig = 1e-1
 hyp_pr_params = np.array([min_eta, max_eta, min_del, max_del, min_sig, max_sig])
@@ -508,88 +525,124 @@ problem.solveFwd(u0, [u0,m0,neg_adj_y])
 problem.solveAdj(neg_adj_y, [u0,m0,neg_adj_y]) 
 
 # %% Compute full spectrum of prior preconditioned update
-theta3 = np.array([0.015, 12.5, 0.01])
-# "true" posterior covariance trace, for error comparison
-r = 200
-lmbda_prior3, V_prior3 = LowRankApprox([theta3[0], theta3[1], theta3[2]], r, args)
-posterior,mg,lmbda_new,V_new = ComputePosterior(theta3, lmbda_prior3, V_prior3, neg_adj_y, [theta3[0], theta3[1], theta3[2]], args)
-true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
+one_spectrum_plot = False
+if one_spectrum_plot:
+    if dim == 2:
+        theta3 = np.array([0.015, 12.5, 0.01])
+    elif dim ==3:
+        theta3 = np.array([0.5, 2, 0.01])
+    # "true" posterior covariance trace, for error comparison
+    r = 250
+    lmbda_prior3, V_prior3 = LowRankApprox([theta3[0], theta3[1], theta3[2]], r, args)
 
-# Plot spectrum
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 20})
-plt.semilogy(range(len(lmbda_prior3)), lmbda_prior3*(theta3[2]**2)*(theta3[1]**2), linewidth=3, label=rf'$\eta=${theta3[0]}')
-plt.ylabel(r'$\lambda_i$')
-plt.xlabel(r'$i$')
-plt.legend()
+    # Plot spectrum
+    fig = plt.figure(figsize=(10,7.2))
+    plt.rcParams.update({'font.size': 20})
+    plt.semilogy(range(len(lmbda_prior3)), lmbda_prior3*(theta3[2]**2)*(theta3[1]**2), linewidth=3, label=rf'$\eta=${theta3[0]}')
+    plt.ylabel(r'$\lambda_i$')
+    plt.xlabel(r'$i$')
+    plt.legend()
+
+#%% Saving spectra for dimension independence check
+save_spectra_dim_check = False
+if save_spectra_dim_check:
+    header = "r \t\t 605linear \t\t 605quadratic \t\t 1225linear \t\t 1225quadratic \t\t 2363linear \t\t 2363quadratic \t\t 5443linear \t\t 5443quadratic \t\t 605cubic \t\t 1225cubic \t\t 2363cubic \t\t 5443cubic"
+    file_path = "images/spectra_dim_indep.txt"
+    # np.savetxt(file_path, np.column_stack((np.arange(1,r+1,1), lmbda_prior3)), delimiter="\t", header=header, fmt='%10.14f', comments="")
+    existing_data = np.loadtxt(file_path, skiprows=1, delimiter="\t")
+    updated_data = np.column_stack((existing_data, lmbda_prior3))
+    np.savetxt(file_path, updated_data, delimiter="\t", header=header, fmt='%10.14f', comments="")
 
 #%% Compute spectra of low-rank approx for 3 methods
-r = 120
-theta1 = np.array([0.003, 50, 0.01])
-theta2 = np.array([0.0075, 25, 0.01])
-lmbda_prior1, V_prior1 = LowRankApprox(theta1, r, args)
-lmbda_prior2, V_prior2 = LowRankApprox(theta2, r, args)
-lmbda_weak, V_weak = LowRankApprox(np.array([min_eta, 1.0, 1.0]), r, args)
-lmbda_unprecon, V_unprecon = LowRankApprox(np.array([0.0, 1.0, 1.0]), r, args)
-l_pr1_scaled = lmbda_prior1*(theta1[2]**2)*(theta1[1]**2)
-l_pr2_scaled = lmbda_prior2*(theta2[2]**2)*(theta2[1]**2)
-l_pr3_scaled = lmbda_prior3*(theta3[2]**2)*(theta3[1]**2)
+full_spectra_plot = False
+if full_spectra_plot:
+    r = 250
+    if dim == 2:
+        theta1 = np.array([0.003, 50, 0.01])
+        theta2 = np.array([0.0075, 25, 0.01])
+    if dim == 3:
+        theta1 = np.array([0.05, 16, 0.01])
+        theta2 = np.array([0.12, 8, 0.01])
+    lmbda_prior1, V_prior1 = LowRankApprox(theta1, r, args)
+    lmbda_prior2, V_prior2 = LowRankApprox(theta2, r, args)
+    lmbda_weak, V_weak = LowRankApprox(np.array([min_eta, 1.0, 1.0]), r, args)
+    lmbda_unprecon, V_unprecon = LowRankApprox(np.array([0.0, 1.0, 1.0]), r, args)
+    l_pr1_scaled = lmbda_prior1*(theta1[2]**2)*(theta1[1]**2)
+    l_pr2_scaled = lmbda_prior2*(theta2[2]**2)*(theta2[1]**2)
+    l_pr3_scaled = lmbda_prior3*(theta3[2]**2)*(theta3[1]**2)
 
-# Ranks for min cutoff
-min_cutoff = tol * min_sig**2 * min_del**2
-r_w_min = np.argmax(lmbda_weak < min_cutoff)
-r_u_min = np.argmax(lmbda_unprecon < min_cutoff)
+    # Ranks for min cutoff
+    min_cutoff = tol * min_sig**2 * min_del**2
+    r_w_min = np.argmax(lmbda_weak < min_cutoff)
+    r_u_min = np.argmax(lmbda_unprecon < min_cutoff)
 
-# Ranks for updated cutoff
-r_p_1 = np.argmax(l_pr1_scaled < tol)
-r_p_2 = np.argmax(l_pr2_scaled < tol)
-r_p_3 = np.argmax(l_pr3_scaled < tol)
-cutoff_3 = tol * theta3[1]**2 * theta3[2]**2
-r_w_3 = np.argmax(lmbda_weak < cutoff_3)
-r_u_3 = np.argmax(lmbda_unprecon < cutoff_3)
-print(f'min cutoff ranks: weak = {r_w_min}, unprecon = {r_u_min}')
-print(f'theta3 cutoff ranks: prior = {r_p_3}, weak = {r_w_3}, unprecon = {r_u_3}')
+    # Ranks for updated cutoff
+    cutoff_3 = tol * theta3[1]**2 * theta3[2]**2
+    r_p_3 = np.argmax(l_pr3_scaled < cutoff_3)
+    r_w_3 = np.argmax(lmbda_weak < cutoff_3)
+    r_u_3 = np.argmax(lmbda_unprecon < cutoff_3)
+    print(f'min cutoff ranks: weak = {r_w_min}, unprecon = {r_u_min}')
+    print(f'theta3 cutoff ranks: prior = {r_p_3}, weak = {r_w_3}, unprecon = {r_u_3}')
 
-# %% Plot spectra
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 20})
-plt.semilogy(range(r), lmbda_unprecon, linewidth=3, label=rf'$\eta=${0}')
-plt.semilogy(range(r), lmbda_weak, linewidth=3, label=rf'$\eta=${min_eta}')
-plt.semilogy(range(r), l_pr1_scaled, linewidth=3, label=rf'$\eta=${theta1[0]}')
-plt.semilogy(range(r), l_pr2_scaled, linewidth=3, label=rf'$\eta=${theta2[0]}')
-plt.semilogy(range(r), l_pr3_scaled[0:r], linewidth=3, label=rf'$\eta=${theta3[0]}')
-plt.ylabel(r'$\Lambda_{ii}$')
-plt.xlabel(r'$i$')
-plt.legend()
+    fig = plt.figure(figsize=(10,7.2))
+    plt.rcParams.update({'font.size': 20})
+    plt.semilogy(range(r), lmbda_unprecon, linewidth=3, label=rf'$\eta=${0}')
+    plt.semilogy(range(r), lmbda_weak, linewidth=3, label=rf'$\eta=${min_eta}')
+    plt.semilogy(range(r), l_pr1_scaled, linewidth=3, label=rf'$\eta=${theta1[0]}')
+    plt.semilogy(range(r), l_pr2_scaled, linewidth=3, label=rf'$\eta=${theta2[0]}')
+    plt.semilogy(range(r), l_pr3_scaled[0:r], linewidth=3, label=rf'$\eta=${theta3[0]}')
+    plt.ylabel(r'$\Lambda_{ii}$')
+    plt.xlabel(r'$i$')
+    plt.legend()
 
-# # %% Save spectrum data
-# header = "r \t\t unprecon \t\t weakest \t\t prior1 \t\t prior2 \t\t prior3"
-# np.savetxt("images/spectra.txt", np.column_stack((np.arange(1,r+1,1), lmbda_unprecon, lmbda_weak, l_pr1_scaled, l_pr2_scaled, l_pr3_scaled[0:r])), delimiter="\t", header=header, fmt='%10.14f', comments="")
+# %% Save spectrum data
+save_spectra = False
+if save_spectra:
+    header = "r \t\t unprecon \t\t weakest \t\t prior1 \t\t prior2 \t\t prior3"
+    np.savetxt("images/spectra.txt", np.column_stack((np.arange(1,r+1,1), lmbda_unprecon, lmbda_weak, l_pr1_scaled, l_pr2_scaled, l_pr3_scaled[0:r])), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
 # %% Error in trace for various ranks k. Uses theta3 as true theta
-rs = np.arange(5, 50, 1)
-errs_prior,r_p_err, = PostCovError(theta3, lmbda_prior3, V_prior3, neg_adj_y, theta3, true_trace, rs, tol, args)
-errs_weak,r_w_err = PostCovError(theta3, lmbda_weak, V_weak, neg_adj_y, np.array([min_eta, 1.0, 1.0]), true_trace, rs, tol, args)
-errs_unprecon,r_u_err = PostCovError(theta3, lmbda_unprecon, V_unprecon, neg_adj_y, np.array([0.0, 1.0, 1.0]), true_trace, rs, tol, args)
+error_plot = False
+posterior_mean_save = False
+if error_plot:
+    posterior,mg,lmbda_new,V_new = ComputePosterior(theta3, lmbda_prior3, V_prior3, neg_adj_y, [theta3[0], theta3[1], theta3[2]], args)
+    true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
 
-print(f'Ranks from error: r_p = {r_p_err}, r_w = {r_w_err}, r_u = {r_u_err}')
+    # Save posterior mean to file
+    if posterior_mean_save:
+        posterior_mean_field = dl.Function(Vh)
+        post_mean_values = posterior.mean.get_local()
+        posterior_mean_field.vector().set_local(post_mean_values)
+        posterior_mean_field.rename("Posterior Mean", "label")
+        pvd_output = dl.File("posterior_mean_{0}.pvd".format(verts))
+        pvd_output << posterior_mean_field
 
-#%% Plot error as a function of rank for 3 methods
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 20})
-plt.semilogy(rs, errs_unprecon, linewidth=3, label=rf'$\eta=${0}')
-plt.semilogy(rs, errs_weak, linewidth=3, label=rf'$\eta=${min_eta}')
-plt.semilogy(rs, errs_prior, linewidth=3, label=rf'$\eta=${theta3[0]}')
-plt.xlabel('rank')
-plt.ylabel(r'relative error in $Tr(Q_{post}^{-1})$')
-plt.legend()
+    rs = np.arange(5, 100, 1)
+    errs_prior,r_p_err, = PostCovError(theta3, lmbda_prior3, V_prior3, neg_adj_y, theta3, true_trace, rs, tol, args)
+    errs_weak,r_w_err = PostCovError(theta3, lmbda_weak, V_weak, neg_adj_y, np.array([min_eta, 1.0, 1.0]), true_trace, rs, tol, args)
+    errs_unprecon,r_u_err = PostCovError(theta3, lmbda_unprecon, V_unprecon, neg_adj_y, np.array([0.0, 1.0, 1.0]), true_trace, rs, tol, args)
 
-# #%% Save error data
-# header_err = "r \t\t unprecon \t\t weakest \t\t prior"
-# np.savetxt("images/trace_errors.txt", np.column_stack((rs, errs_unprecon, errs_weak, errs_prior)), delimiter="\t", header=header_err, fmt='%10.14f', comments="")
+    print(f'Ranks from error: r_p = {r_p_err}, r_w = {r_w_err}, r_u = {r_u_err}')
+
+    # Plot error as a function of rank for 3 methods
+    fig = plt.figure(figsize=(10,7.2))
+    plt.rcParams.update({'font.size': 20})
+    plt.semilogy(rs, errs_unprecon, linewidth=3, label=rf'$\eta=${0}')
+    plt.semilogy(rs, errs_weak, linewidth=3, label=rf'$\eta=${min_eta}')
+    plt.semilogy(rs, errs_prior, linewidth=3, label=rf'$\eta=${theta3[0]}')
+    plt.xlabel('rank')
+    plt.ylabel(r'relative error in $Tr(Q_{post}^{-1})$')
+    plt.legend()
+
+# # #%% Save error data
+# # header_err = "r \t\t unprecon \t\t weakest \t\t prior"
+# # np.savetxt("images/trace_errors.txt", np.column_stack((rs, errs_unprecon, errs_weak, errs_prior)), delimiter="\t", header=header_err, fmt='%10.14f', comments="")
 
 # %% Find low rank approx of prior-to-posterior update
-r_p = 30 ; r_w = 95; r_u = 110 #r_w_min; r_u = r_u_min
+if dim == 2:
+    r_p = 50 ; r_w = 95; r_u = 110
+elif dim == 3:
+    r_p = 90; r_w = 170; r_u = 219
 precon = 'weakest'
 
 if precon == 'unprecon':
@@ -602,19 +655,24 @@ else:
     r = r_w
 
 # %% Compute -log pi for a range of thetas
-# Uncomment for profiling %%prun 
-compute_start = time.time()
-
+%%prun 
 if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, args)
-
-nn = 10
+#%%
+%%prun
+ne = 1
+nd = 1
 ns = 1
-eta_range = np.linspace(0.0015,0.03,nn)
-d_range = np.linspace(15,60,nn)
-s_range = np.linspace(10e-3, 1e-2, ns)
-logpi = np.zeros((len(eta_range),len(d_range),len(s_range)))
-print('Progress in indices computed from (0,0,0) to ({0},{0},{1}):'.format(nn-1,ns-1))
+if dim == 2:
+    eta_range = np.linspace(0.0015,0.02,ne)
+    d_range = np.linspace(15,60,nd)
+    s_range = np.linspace(10e-3, 1.2e-2, ns)
+elif dim == 3:
+    eta_range = np.linspace(0.01,0.5,ne)
+    d_range = np.linspace(2,16,nd)
+    s_range = np.linspace(10e-3, 1e-2, ns)
+logpi = np.zeros((ne,nd,ns))
+print('Progress in indices computed from (0,0,0) to ({0},{1},{2}):'.format(ne-1,nd-1,ns-1))
 for i in range(len(eta_range)):
     for j in range(len(d_range)):
         for k in range(len(s_range)):
@@ -626,31 +684,20 @@ for i in range(len(eta_range)):
             logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, args)
             print('({0},{1},{2})'.format(i,j,k))
 
-compute_end = time.time()
-print(f"Compute time: {compute_end-compute_start} seconds")
-
+#%%
 pitheta = np.exp(-logpi+np.min(logpi))
 # #%%
 # etamesh,dmesh,smesh = np.meshgrid(eta_range, d_range, s_range, indexing='ij')
 # header = "eta \t\t delta \t\t sigma \t\t pi_theta"
-# np.savetxt("images/pi_theta_50x50x50.txt", np.column_stack((etamesh.ravel(), dmesh.ravel(), smesh.ravel(), pitheta.ravel())), delimiter="\t", header=header, fmt=('%g', '%g', '%g', '%e'), comments="")
+# np.savetxt("images/pi_theta_40x40x20.txt", np.column_stack((etamesh.ravel(), dmesh.ravel(), smesh.ravel(), pitheta.ravel())), delimiter="\t", header=header, fmt=('%g', '%g', '%g', '%e'), comments="")
 # %%
 
 sig_idx = 0
-plt.pcolormesh(d_range,eta_range,logpi[:,:,sig_idx])
-plt.set_cmap('bone')
-plt.colorbar()
-plt.title(fr'$-log \, \pi(\eta, \delta, \sigma | y), \quad \sigma = {s_range[sig_idx]}$')
-plt.ylabel(r'$\eta$')
-plt.xlabel(r'$\delta$')
-
-# %%
-
 # scaled arbitrarily to have max value 1 in order to avoid overflow errors
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
 plt.set_cmap('bone')
-plt.pcolormesh(d_range,eta_range,np.exp(-logpi[:,:,sig_idx]+np.min(logpi[:,:,sig_idx])))
+plt.pcolormesh(d_range,eta_range,pitheta[:,:,sig_idx])
 plt.colorbar()
 # plt.title(r'$\pi(\eta, \delta | y), dofs={0}$'.format(dofs))
 plt.title(r'$\pi(\eta, \delta, \sigma | y)$')
@@ -659,28 +706,12 @@ plt.xlabel(r'$\delta$')
 # plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
 
 # %%
-eta_idx = 3; d_idx = 3
+eta_idx = 0; d_idx = 0
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
-plt.plot(s_range,logpi[eta_idx,d_idx,:])
-plt.xlabel(r'$\sigma$')
-plt.ylabel(r'$-log \pi(\eta, \delta, \sigma|y)$')
-
-# %%
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.plot(s_range,np.exp(-logpi[eta_idx,d_idx,:]+np.min(logpi[eta_idx,d_idx,:])))
+plt.plot(s_range,pitheta[eta_idx,d_idx,:])
 plt.xlabel(r'$\sigma$')
 plt.ylabel(r'$\pi(\eta, \delta, \sigma|y)$')
-
- # %%
-
-plt.pcolormesh(s_range,eta_range,logpi[:,d_idx,:])
-plt.set_cmap('bone')
-plt.colorbar()
-plt.title(fr'$-log \, \pi(\eta, \delta, \sigma | y), \quad \delta = {d_range[d_idx]}$')
-plt.ylabel(r'$\eta$')
-plt.xlabel(r'$\sigma$')
 
 # %%
 
@@ -688,7 +719,7 @@ plt.xlabel(r'$\sigma$')
 fig = plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 16})
 plt.set_cmap('bone')
-plt.pcolormesh(s_range,eta_range,np.exp(-logpi[:,d_idx,:]+np.min(logpi[:,d_idx,:])))
+plt.pcolormesh(s_range,eta_range,pitheta[:,d_idx,:])
 plt.colorbar()
 # plt.title(r'$\pi(\eta, \delta | y), dofs={0}$'.format(dofs))
 plt.title(rf'$\pi(\eta, \delta, \sigma | y), \: \delta = {d_range[d_idx]:.2f}$')
@@ -702,8 +733,12 @@ plt.xlabel(r'$\sigma$')
 opt_start = time.time()
 def neglogpi_helper(theta):
     return neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, args)
-theta0 = np.array([0.1, 10, 8e-3])
-theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',options={'disp':True})
+def opt_callback(intermediate_result):
+    # print(f"Iteration: {intermediate_result.nit}")
+    print(f"Current x: {intermediate_result.x}")
+    print(f"Objective value: {intermediate_result.fun}")
+theta0 = np.array([0.12, 9, 1e-2])
+theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',callback=opt_callback, options={'disp':True,'xatol':1e-2,'fatol':1e-2})
 opt_end = time.time()
 print(f"Optimization time: {opt_end-opt_start} seconds")
 
@@ -714,7 +749,10 @@ print(f"MAP point of pi(theta|y): {theta_MAP}")
 ## Find inverse Hessian at MAP point
 
 # choosing the finite difference dx's here is finicky -- can't be much smaller
-dtheta = [1e-3,8e-1,1e-5] # test last number options
+if dim == 2:
+    dtheta = [1e-3,8e-1,1e-5]
+elif dim == 3:
+    dtheta = [1e-3,1e-2,1e-5]
 ntheta = np.size(dtheta)
 
 Hess_MAP = np.zeros((ntheta,ntheta))
@@ -810,6 +848,13 @@ ax.set_xlabel(r'$\eta$')
 ax.set_ylabel(r'$\delta$')
 ax.set_zlabel(r'$\sigma$')
 ax.set_title('Quadrature Points')
+
+# #%% Saving (scaled) quadrature points for Paraview plot
+# quad_pts_scaled = quad_points.copy()
+# quad_pts_scaled[:,0] = quad_pts_scaled[:,0]*2000
+# quad_pts_scaled[:,2] = quad_pts_scaled[:,2]*10000
+# header = "eta, delta, sigma"
+# np.savetxt("images/quad_points_scaled.txt", quad_pts_scaled, delimiter=",", header=header, fmt='%10.10f', comments="")
 
 #%%
 # precompute pi(theta|y) at quad points and scale to integrate to 1
