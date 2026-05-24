@@ -76,16 +76,6 @@ def computeVelocityField(mesh):
         
     return v
 
-class Args():
-    def __init__(self, mesh, Vstate, Vparam, misfit, simulation_times, kappa, wind_velocity):
-        self.mesh = mesh
-        self.Vstate = Vstate
-        self.Vparam = Vparam
-        self.misfit = misfit
-        self.simulation_times = simulation_times
-        self.kappa = kappa
-        self.wind_velocity = wind_velocity
-
 # Helper function for slicing multivectors
 def mv_k(mv, n):
     mv_n = MultiVector(mv[0], n)
@@ -94,24 +84,22 @@ def mv_k(mv, n):
         mv_n[i].axpy(1.0, mv[i])
     return mv_n
 
-def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, args):
+def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem):
     '''
     Solve inverse problem
     Output: posterior object and mg = mu_u0^T Q_u0 + y^T Q_eps A
     Input:  theta = eta, delta: hyperparameters of prior, sigma: noise hyperparameter
             lmbda, V: low rank decomp of Q_pre^-1/2 A^T A Q_pre^-1/2, where Q_pre is a preconditioning prior precision
             pretheta = preeta, predelta: parameters of Q_pre, and presigma: noise stdev used in low rank approx
-            args = mesh, Vstate, Vparam, misfit, simulation_times, kappa, and wind_velocity
+            problem: contains mesh, Vstate, Vparam, misfit, simulation_times, kappa, wind_velocity, and a prior that is overwritten
     '''
     preeta, predelta, presigma = pretheta
     eta, delta, sigma = theta
     
-    prior = BiLaplacianPrior(args.Vparam, eta*delta, delta, robin_bc=True)
-    prior.mean = dl.interpolate(dl.Constant(prior_mean), args.Vparam).vector()
+    prior = BiLaplacianPrior(problem.Vh[PARAMETER], eta*delta, delta, robin_bc=True)
+    prior.mean = dl.interpolate(dl.Constant(prior_mean), problem.Vh[PARAMETER]).vector()
 
-    problem = TimeDependentAD(args.mesh, [args.Vstate,args.Vparam,args.Vstate], \
-                              prior, args.misfit, args.simulation_times, args.kappa, \
-                                args.wind_velocity, True)
+    problem.prior = prior
     problem.misfit.noise_variance = sigma**2
 
     ## Compute the gradient
@@ -135,8 +123,8 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, args):
         V_new = V
     # weakest or no preconditioning
     else:
-        preprior = BiLaplacianPrior(args.Vparam, preeta*predelta, predelta, robin_bc=True)
-        preprior.mean = dl.interpolate(dl.Constant(prior_mean), args.Vparam).vector()
+        preprior = BiLaplacianPrior(problem.Vh[PARAMETER], preeta*predelta, predelta, robin_bc=True)
+        preprior.mean = dl.interpolate(dl.Constant(prior_mean), problem.Vh[PARAMETER]).vector()
         # replace preprior with prior
         W = MultiVector(V)
         for i in range(V.nvec()):
@@ -175,8 +163,8 @@ def neg_log_hyperprior(theta, hyp_pr_params):
     return theta_prior
 
 # -log pi(theta | y) (- log posterior marginal joint pdf of theta)
-# warning: changes noise variance in args.misfit for each theta
-def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, args):
+# warning: changes noise variance in problem.misfit for each theta
+def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem):
     preeta, predelta, presigma = pretheta
     eta, delta, sigma = theta
 
@@ -192,8 +180,7 @@ def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, arg
         V_new[i][:] = V[i]
 
     # compute new posterior
-    args.misfit.noise_variance = sigma**2 # careful, args is mutable
-    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_new, V_new, neg_adj_y, pretheta, args)
+    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_new, V_new, neg_adj_y, pretheta, problem)
     
     # -log(|Q_pr|/|Q_post|)
     det_ratio = 0.0
@@ -216,19 +203,19 @@ def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, arg
     muQmu = 0.5*posterior.prior.mean.inner(Qmu)
 
     # y^T Q_eps y
-    yQy = 0.5*args.misfit.d.inner(args.misfit.d)/(sigma**2)
+    yQy = 0.5*problem.misfit.d.inner(problem.misfit.d)/(sigma**2)
 
     return det_ratio + theta_prior + uQu + muQmu + yQy
 
 # find rank k approx to Hessian preconditioned by prior with params pretheta
 # eigvals are lambda/presigma^2/predelta^2, using defn of lambda from paper
-def LowRankApprox(pretheta, k, args):
+def LowRankApprox(pretheta, k, problem):
     preeta, predelta, presigma = pretheta
-    args.misfit.noise_variance = presigma**2
 
-    preprior = BiLaplacianPrior(args.Vparam, preeta*predelta, predelta, robin_bc=True)
-    preprior.mean = dl.interpolate(dl.Constant(prior_mean), args.Vparam).vector()
-    problem = TimeDependentAD(args.mesh, [args.Vstate,args.Vparam,args.Vstate], preprior, args.misfit, args.simulation_times, args.kappa, args.wind_velocity, True)
+    preprior = BiLaplacianPrior(problem.Vh[PARAMETER], preeta*predelta, predelta, robin_bc=True)
+    preprior.mean = dl.interpolate(dl.Constant(prior_mean), problem.Vh[PARAMETER]).vector()
+    problem.prior = preprior
+    problem.misfit.noise_variance = presigma**2
         
     H_misfit_only = ReducedHessian(problem, misfit_only=True)
     pad = int(k/2)
@@ -240,13 +227,13 @@ def LowRankApprox(pretheta, k, args):
 
 # returns errors in posterior covariance for ranks ks, first rank at which error is below threshold,
 # and low rank approximation with rank max(ks)
-def PostCovError(theta, lmbda, V, neg_adj_y, pretheta, truth, ks, threshold, args):
+def PostCovError(theta, lmbda, V, neg_adj_y, pretheta, truth, ks, threshold, problem):
     errs = np.zeros(len(ks))
     first_ii = -1
     for ii in range(len(ks)):
         print(ii)
         k = ks[ii]
-        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda[0:k], mv_k(V,k), neg_adj_y, pretheta, args)
+        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda[0:k], mv_k(V,k), neg_adj_y, pretheta, problem)
         posterior_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
         errs[ii] = (posterior_trace-truth)/truth
         # first rank with error below threshold
@@ -295,18 +282,18 @@ def QoIadj(qoi, Vh, boxlims):
     return b
 
 # find distribution of QoI for fixed theta
-def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, args):
+def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, problem):
     output = np.zeros(len(qoi))
     # find Gaussian pi(qoi|theta,y)
     prior = BiLaplacianPrior(Vh, theta[0]*theta[1], theta[1], robin_bc=True)
-    prior.mean = dl.interpolate(dl.Constant(prior_mean), args.Vparam).vector()
-    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, args)
+    prior.mean = dl.interpolate(dl.Constant(prior_mean), problem.Vh[PARAMETER]).vector()
+    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem)
     # mean
-    mm = QoI(posterior.mean, args.Vparam, boxlims)
+    mm = QoI(posterior.mean, problem.Vh[PARAMETER], boxlims)
     # var = QoI(Q_post_inv*QoIadj(1))
     temp = dl.Vector(posterior.prior.R.mpi_comm())
     posterior.prior.init_vector(temp,0)
-    problem = TimeDependentAD(args.mesh, [args.Vstate,args.Vparam,args.Vstate], prior, args.misfit, args.simulation_times, args.kappa, args.wind_velocity, True)
+    problem.prior = prior
     problem.misfit.noise_variance = theta[2]**2
     H = ReducedHessian(problem, misfit_only=False) 
     solver = CGSolverSteihaug()
@@ -314,7 +301,7 @@ def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, args
     solver.set_preconditioner( posterior.Hlr )
     solver.parameters["print_level"] = -1
     solver.parameters["rel_tolerance"] = 1e-6
-    b = QoIadj(1.0, args.Vparam, boxlims)
+    b = QoIadj(1.0, problem.Vh[PARAMETER], boxlims)
     solver.solve(temp, b)
     vv = temp.inner(b)
     # evaluate Gaussian at each qoi value
@@ -324,14 +311,14 @@ def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, args
 
 # return marginal distribution of QoI evaluated at a vector of qoi's
 # (some day make this work for a single scalar qoi too)
-def QoIdist(qoi, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, args):
+def QoIdist(qoi, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, problem):
     output = np.zeros(len(qoi))
     gauss_evals = np.zeros((len(qoi),quad_points.shape[0]))
     # for each quadrature point:
     for idx in range(quad_points.shape[0]):
         # find Gaussian pi(qoi|theta,y) where theta = the quadrature point
         theta = quad_points[idx,:]
-        gauss_evals[:,idx] = QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, args)
+        gauss_evals[:,idx] = QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
         # multiply by pi(theta|y) at qpt and area/volume element and add
         output += d_area*pi_theta_quad[idx]*gauss_evals[:,idx]
     return output
@@ -339,16 +326,16 @@ def QoIdist(qoi, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_
 ## QoI distribution for when QoI is pointwise evaluation
 ## Finds QoI distribution at a list of locations simultaneously (unlike general code above)
 # find pi(x^i|y) for each location i in locs at values u_0_eval of u_0
-def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbda, V, neg_adj_y, pretheta, args):
+def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbda, V, neg_adj_y, pretheta, problem):
     output = np.zeros((len(locs),len(u_0_eval)))
     gauss_evals = np.zeros((len(locs),len(u_0_eval),quad_points.shape[0]))
     for idx in range(quad_points.shape[0]):
         theta = quad_points[idx,:]
-        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, args)
+        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem)
         # pi(u_0^i|theta,y)
         posterior_var,pr,corr = posterior.pointwise_variance(method="Exact")
-        mm = dl.Function(args.Vparam,posterior.mean)
-        vv = dl.Function(args.Vparam,posterior_var)
+        mm = dl.Function(problem.Vh[PARAMETER],posterior.mean)
+        vv = dl.Function(problem.Vh[PARAMETER],posterior_var)
         for ii in range(len(locs)):
             for jj in range(len(u_0_eval)):
                 uu = u_0_eval[jj]
@@ -357,7 +344,7 @@ def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbd
     return output,gauss_evals
 
 # %%
-dim = 3
+dim = 2
 # ******************** 2D Problem Setup ****************************
 if dim == 2:
     ## Import 2D mesh
@@ -428,7 +415,7 @@ else:
     print("Dimension must be 2 or 3")
 
 # %% Solve Forward Problem
-nt = 20
+nt = 80
 t_init         = 0.
 t_final        = 4.
 t_1            = 2.4
@@ -499,14 +486,11 @@ elif dim == 3 and save_fwd_soln_3d:
         file_pvd << (u_plot, t)
 
 # %% Define parameters
-# note -- contains the true noise variance in misfit. Will be overwritten in computation.
-args = Args(mesh, Vh2, Vh, misfit, simulation_times, kappa, wind_velocity)
-
 # hyperprior parameters (independent, uniform in [min,max])
 if dim == 2:
     min_eta = 0.0015
 elif dim == 3:
-    min_eta = 0.02
+    min_eta = 0.01
 max_eta = 10
 min_del = 1; max_del = 100
 min_sig = 3e-3; max_sig = 1e-1
@@ -517,7 +501,8 @@ pretheta = np.array([min_eta, 1, 1])
 tol = 1e-2
 
 # %% Precompute -A^T y in MAP point
-problem = TimeDependentAD(args.mesh, [args.Vstate,args.Vparam,args.Vstate], prior, args.misfit, args.simulation_times, args.kappa, args.wind_velocity, True)
+# note -- problem contains the true noise variance in misfit. Will be overwritten in computation.
+problem = TimeDependentAD(mesh, [Vh2,Vh,Vh2], prior, misfit, simulation_times, kappa, wind_velocity, True)
 problem.misfit.noise_variance = pretheta[2]
 # This computes -A^T Q_eps y, so -A^T y with sigma = 1
 [u0,m0,neg_adj_y] = problem.generate_vector()
@@ -533,7 +518,7 @@ if one_spectrum_plot:
         theta3 = np.array([0.5, 2, 0.01])
     # "true" posterior covariance trace, for error comparison
     r = 250
-    lmbda_prior3, V_prior3 = LowRankApprox([theta3[0], theta3[1], theta3[2]], r, args)
+    lmbda_prior3, V_prior3 = LowRankApprox([theta3[0], theta3[1], theta3[2]], r, problem)
 
     # Plot spectrum
     fig = plt.figure(figsize=(10,7.2))
@@ -563,10 +548,10 @@ if full_spectra_plot:
     if dim == 3:
         theta1 = np.array([0.05, 16, 0.01])
         theta2 = np.array([0.12, 8, 0.01])
-    lmbda_prior1, V_prior1 = LowRankApprox(theta1, r, args)
-    lmbda_prior2, V_prior2 = LowRankApprox(theta2, r, args)
-    lmbda_weak, V_weak = LowRankApprox(np.array([min_eta, 1.0, 1.0]), r, args)
-    lmbda_unprecon, V_unprecon = LowRankApprox(np.array([0.0, 1.0, 1.0]), r, args)
+    lmbda_prior1, V_prior1 = LowRankApprox(theta1, r, problem)
+    lmbda_prior2, V_prior2 = LowRankApprox(theta2, r, problem)
+    lmbda_weak, V_weak = LowRankApprox(np.array([min_eta, 1.0, 1.0]), r, problem)
+    lmbda_unprecon, V_unprecon = LowRankApprox(np.array([0.0, 1.0, 1.0]), r, problem)
     l_pr1_scaled = lmbda_prior1*(theta1[2]**2)*(theta1[1]**2)
     l_pr2_scaled = lmbda_prior2*(theta2[2]**2)*(theta2[1]**2)
     l_pr3_scaled = lmbda_prior3*(theta3[2]**2)*(theta3[1]**2)
@@ -605,7 +590,7 @@ if save_spectra:
 error_plot = False
 posterior_mean_save = False
 if error_plot:
-    posterior,mg,lmbda_new,V_new = ComputePosterior(theta3, lmbda_prior3, V_prior3, neg_adj_y, [theta3[0], theta3[1], theta3[2]], args)
+    posterior,mg,lmbda_new,V_new = ComputePosterior(theta3, lmbda_prior3, V_prior3, neg_adj_y, [theta3[0], theta3[1], theta3[2]], problem)
     true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
 
     # Save posterior mean to file
@@ -618,9 +603,9 @@ if error_plot:
         pvd_output << posterior_mean_field
 
     rs = np.arange(5, 100, 1)
-    errs_prior,r_p_err, = PostCovError(theta3, lmbda_prior3, V_prior3, neg_adj_y, theta3, true_trace, rs, tol, args)
-    errs_weak,r_w_err = PostCovError(theta3, lmbda_weak, V_weak, neg_adj_y, np.array([min_eta, 1.0, 1.0]), true_trace, rs, tol, args)
-    errs_unprecon,r_u_err = PostCovError(theta3, lmbda_unprecon, V_unprecon, neg_adj_y, np.array([0.0, 1.0, 1.0]), true_trace, rs, tol, args)
+    errs_prior,r_p_err, = PostCovError(theta3, lmbda_prior3, V_prior3, neg_adj_y, theta3, true_trace, rs, tol, problem)
+    errs_weak,r_w_err = PostCovError(theta3, lmbda_weak, V_weak, neg_adj_y, np.array([min_eta, 1.0, 1.0]), true_trace, rs, tol, problem)
+    errs_unprecon,r_u_err = PostCovError(theta3, lmbda_unprecon, V_unprecon, neg_adj_y, np.array([0.0, 1.0, 1.0]), true_trace, rs, tol, problem)
 
     print(f'Ranks from error: r_p = {r_p_err}, r_w = {r_w_err}, r_u = {r_u_err}')
 
@@ -643,7 +628,7 @@ if dim == 2:
     r_p = 50 ; r_w = 95; r_u = 110
 elif dim == 3:
     r_p = 90; r_w = 170; r_u = 219
-precon = 'weakest'
+precon = 'prior'
 
 if precon == 'unprecon':
     pretheta[0] = 0.0
@@ -657,19 +642,19 @@ else:
 # %% Compute -log pi for a range of thetas
 %%prun 
 if precon == 'weakest' or precon == 'unprecon':
-    lmbda, V = LowRankApprox(pretheta, r, args)
-#%%
-%%prun
-ne = 1
-nd = 1
+    lmbda, V = LowRankApprox(pretheta, r, problem)
+# #%%
+# comment %%prun
+ne = 10
+nd = 10
 ns = 1
 if dim == 2:
     eta_range = np.linspace(0.0015,0.02,ne)
     d_range = np.linspace(15,60,nd)
-    s_range = np.linspace(10e-3, 1.2e-2, ns)
+    s_range = np.linspace(8.5e-3, 1.2e-2, ns)
 elif dim == 3:
     eta_range = np.linspace(0.01,0.5,ne)
-    d_range = np.linspace(2,16,nd)
+    d_range = np.linspace(2,60,nd)
     s_range = np.linspace(10e-3, 1e-2, ns)
 logpi = np.zeros((ne,nd,ns))
 print('Progress in indices computed from (0,0,0) to ({0},{1},{2}):'.format(ne-1,nd-1,ns-1))
@@ -680,12 +665,13 @@ for i in range(len(eta_range)):
             theta = np.array([eta_range[i],d_range[j],s_range[k]])
             if precon == 'prior':
                 pretheta = theta.tolist()
-                lmbda, V = LowRankApprox(pretheta, r, args)
-            logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, args)
+                lmbda, V = LowRankApprox(pretheta, r, problem)
+            logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem)
             print('({0},{1},{2})'.format(i,j,k))
 
 #%%
 pitheta = np.exp(-logpi+np.min(logpi))
+print(-logpi)
 # #%%
 # etamesh,dmesh,smesh = np.meshgrid(eta_range, d_range, s_range, indexing='ij')
 # header = "eta \t\t delta \t\t sigma \t\t pi_theta"
@@ -732,7 +718,7 @@ plt.xlabel(r'$\sigma$')
 
 opt_start = time.time()
 def neglogpi_helper(theta):
-    return neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, args)
+    return neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem)
 def opt_callback(intermediate_result):
     # print(f"Iteration: {intermediate_result.nit}")
     print(f"Current x: {intermediate_result.x}")
@@ -896,15 +882,15 @@ print(f"QoI(constant 1 function) = {QoI(testu0, Vh2, boxlims)}")
 # %%
 # evaluate pi(qoi|y) at range of qoi values
 qoi_range = np.linspace(0.1,0.275,100)
-pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, args)
+pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
 
 #%%
 theta_true = theta_MAP
 theta1 = np.array([0.003, 50, 0.01])
 theta3 = np.array([0.015, 12.5, 0.01])
-pi_qoi_th_true = QoIdist_fixed_theta(qoi_range, theta_true, boxlims, lmbda, V, neg_adj_y, pretheta, args)
-pi_qoi_th_1 = QoIdist_fixed_theta(qoi_range, theta1, boxlims, lmbda, V, neg_adj_y, pretheta, args)
-pi_qoi_th_3 = QoIdist_fixed_theta(qoi_range, theta3, boxlims, lmbda, V, neg_adj_y, pretheta, args)
+pi_qoi_th_true = QoIdist_fixed_theta(qoi_range, theta_true, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
+pi_qoi_th_1 = QoIdist_fixed_theta(qoi_range, theta1, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
+pi_qoi_th_3 = QoIdist_fixed_theta(qoi_range, theta3, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
 
 # true QoI
 true_QoI = QoI(true_initial_condition, Vh, boxlims)
@@ -932,7 +918,7 @@ plt.legend()
 u_range = np.linspace(0.0,0.55,100)
 locations = [[0.3,0.7],[0.45,0.55]]
 true_u0_fun = dl.Function(Vh,true_initial_condition)
-pi_u_0_i_evals,gauss_evals = posterior_marginals(locations, u_range, quad_points, pi_theta_quad, d_area, lmbda, V, neg_adj_y, pretheta, args)
+pi_u_0_i_evals,gauss_evals = posterior_marginals(locations, u_range, quad_points, pi_theta_quad, d_area, lmbda, V, neg_adj_y, pretheta)
 # %%
 pi_u_0_i_evals_norms = trapezoid(pi_u_0_i_evals,dx=u_range[1]-u_range[0],axis=1)
 pi_u_0_i_evals_normalized = (pi_u_0_i_evals.T/pi_u_0_i_evals_norms).T
