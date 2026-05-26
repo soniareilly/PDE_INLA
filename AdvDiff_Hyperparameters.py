@@ -344,7 +344,7 @@ def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbd
     return output,gauss_evals
 
 # %%
-dim = 2
+dim = 3
 # ******************** 2D Problem Setup ****************************
 if dim == 2:
     ## Import 2D mesh
@@ -370,7 +370,7 @@ if dim == 2:
     ## Observation points along building edges
     targets = np.loadtxt('targets/targets_2d.txt')
 
-    # # plot initial condtion and target locations
+    # # plot velocity field and target locations
     # Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
     # smaller_mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(557)) )
     # vh = dl.project(wind_velocity,Xh)
@@ -382,7 +382,7 @@ if dim == 2:
 # ******************** 3D Problem Setup ****************************
 elif dim == 3:
     ## Import 3D mesh and advection velocity field (precomputed)
-    verts = 1281
+    verts = 7480
 
     mesh = dl.Mesh()
     hdf = dl.HDF5File(mesh.mpi_comm(), "velocity_fields/velocity_field_{0}.h5".format(verts), "r")
@@ -514,8 +514,8 @@ one_spectrum_plot = False
 if one_spectrum_plot:
     if dim == 2:
         theta3 = np.array([0.015, 12.5, 0.01])
-    elif dim ==3:
-        theta3 = np.array([0.5, 2, 0.01])
+    elif dim == 3:
+        theta3 = np.array([0.08, 15, 0.01])
     # "true" posterior covariance trace, for error comparison
     r = 250
     lmbda_prior3, V_prior3 = LowRankApprox([theta3[0], theta3[1], theta3[2]], r, problem)
@@ -546,8 +546,8 @@ if full_spectra_plot:
         theta1 = np.array([0.003, 50, 0.01])
         theta2 = np.array([0.0075, 25, 0.01])
     if dim == 3:
-        theta1 = np.array([0.05, 16, 0.01])
-        theta2 = np.array([0.12, 8, 0.01])
+        theta1 = np.array([0.02, 60, 0.01])
+        theta2 = np.array([0.04, 30, 0.01])
     lmbda_prior1, V_prior1 = LowRankApprox(theta1, r, problem)
     lmbda_prior2, V_prior2 = LowRankApprox(theta2, r, problem)
     lmbda_weak, V_weak = LowRankApprox(np.array([min_eta, 1.0, 1.0]), r, problem)
@@ -584,7 +584,7 @@ if full_spectra_plot:
 save_spectra = False
 if save_spectra:
     header = "r \t\t unprecon \t\t weakest \t\t prior1 \t\t prior2 \t\t prior3"
-    np.savetxt("images/spectra.txt", np.column_stack((np.arange(1,r+1,1), lmbda_unprecon, lmbda_weak, l_pr1_scaled, l_pr2_scaled, l_pr3_scaled[0:r])), delimiter="\t", header=header, fmt='%10.14f', comments="")
+    np.savetxt("images/spectra_3DAD_full.txt", np.column_stack((np.arange(1,r+1,1), lmbda_unprecon, lmbda_weak, l_pr1_scaled, l_pr2_scaled, l_pr3_scaled[0:r])), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
 # %% Error in trace for various ranks k. Uses theta3 as true theta
 error_plot = False
@@ -627,8 +627,9 @@ if error_plot:
 if dim == 2:
     r_p = 50 ; r_w = 95; r_u = 110
 elif dim == 3:
-    r_p = 90; r_w = 170; r_u = 219
-precon = 'prior'
+    # r_p = 80; r_w = 184; r_u = 220
+    r_p = 100; r_w = 199; r_u = 237
+precon = 'weakest'
 
 if precon == 'unprecon':
     pretheta[0] = 0.0
@@ -643,8 +644,8 @@ else:
 %%prun 
 if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, problem)
-# #%%
-# comment %%prun
+#%%
+%%prun
 ne = 10
 nd = 10
 ns = 1
@@ -653,8 +654,8 @@ if dim == 2:
     d_range = np.linspace(15,60,nd)
     s_range = np.linspace(8.5e-3, 1.2e-2, ns)
 elif dim == 3:
-    eta_range = np.linspace(0.01,0.5,ne)
-    d_range = np.linspace(2,60,nd)
+    eta_range = np.linspace(0.01,0.2,ne)
+    d_range = np.linspace(2,80,nd)
     s_range = np.linspace(10e-3, 1e-2, ns)
 logpi = np.zeros((ne,nd,ns))
 print('Progress in indices computed from (0,0,0) to ({0},{1},{2}):'.format(ne-1,nd-1,ns-1))
@@ -671,7 +672,6 @@ for i in range(len(eta_range)):
 
 #%%
 pitheta = np.exp(-logpi+np.min(logpi))
-print(-logpi)
 # #%%
 # etamesh,dmesh,smesh = np.meshgrid(eta_range, d_range, s_range, indexing='ij')
 # header = "eta \t\t delta \t\t sigma \t\t pi_theta"
@@ -723,13 +723,14 @@ def opt_callback(intermediate_result):
     # print(f"Iteration: {intermediate_result.nit}")
     print(f"Current x: {intermediate_result.x}")
     print(f"Objective value: {intermediate_result.fun}")
-theta0 = np.array([0.12, 9, 1e-2])
+theta0 = np.array([0.04, 30, 1e-2])
 theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',callback=opt_callback, options={'disp':True,'xatol':1e-2,'fatol':1e-2})
 opt_end = time.time()
 print(f"Optimization time: {opt_end-opt_start} seconds")
 
 theta_MAP = theta_opt.x
 print(f"MAP point of pi(theta|y): {theta_MAP}")
+# theta_MAP = np.array([3.45302293e-02, 3.39541763e+01, 9.75111448e-03])
 
 # %%
 ## Find inverse Hessian at MAP point
@@ -738,7 +739,7 @@ print(f"MAP point of pi(theta|y): {theta_MAP}")
 if dim == 2:
     dtheta = [1e-3,8e-1,1e-5]
 elif dim == 3:
-    dtheta = [1e-3,1e-2,1e-5]
+    dtheta = [1e-3,2,1e-5]
 ntheta = np.size(dtheta)
 
 Hess_MAP = np.zeros((ntheta,ntheta))
@@ -770,13 +771,14 @@ H_MAP_inv = np.linalg.inv(Hess_MAP)
 # find principal directions
 Hinv_lam,Hinv_V = np.linalg.eig(H_MAP_inv)
 Hinv_L_sqrt = np.diag(np.sqrt(Hinv_lam))
+print(Hinv_L_sqrt)
 def theta_of_z(z):
     return theta_MAP + np.dot(Hinv_V,np.dot(Hinv_L_sqrt,z))
 
 # %%
 # for each coordinate of z, find its values with significant probability
-delta_z = 1
-delta_pi = 2.5
+delta_z = 0.8
+delta_pi = 3
 maxiter = 20
 
 z_highprob = [np.array([0.0]) for i in range(ntheta)]
@@ -784,14 +786,14 @@ for idx in range(ntheta):
     z = np.zeros(ntheta)
     z[idx] = delta_z
     count = 0
-    while all(theta_of_z(z)>0) and neglogpi_helper(theta_of_z(z)) - neglogpi_helper(theta_MAP) < delta_pi and count < maxiter:
+    while all(theta_of_z(z)>0) and neglogpi_helper(theta_of_z(z)) - neglogpiMAP < delta_pi and count < maxiter:
         z_highprob[idx] = np.append(z_highprob[idx],z[idx])
         z[idx] += delta_z
         count += 1
         print(count)
     count = 0
     z[idx] = -delta_z
-    while all(theta_of_z(z)>0) and neglogpi_helper(theta_of_z(z)) - neglogpi_helper(theta_MAP) < delta_pi and count < maxiter:
+    while all(theta_of_z(z)>0) and neglogpi_helper(theta_of_z(z)) - neglogpiMAP < delta_pi and count < maxiter:
         z_highprob[idx] = np.append(z_highprob[idx],z[idx])
         z[idx] -= delta_z
         count += 1
@@ -810,6 +812,7 @@ def pt_pairs(list1, list2):
             newlist.append(list1[i]+[list2[j]])
     return newlist
 
+quad_start = time.time()
 # use to recursively find all combinations of possible points
 all_points = [[zval] for zval in z_highprob[0]]
 if ntheta > 1:
@@ -819,11 +822,21 @@ if ntheta > 1:
 # search through them for only the ones with high enough probability
 # could be more efficient -- don't recalculate along axes, and/or store values for later
 quad_points = []
+print('Points to be checked: {0}'.format(len(all_points)))
 for i in range(len(all_points)):
+    print(i)
     theta_i = theta_of_z(np.array(all_points[i]))
-    if neglogpi_helper(theta_i) - neglogpi_helper(theta_MAP) < delta_pi:
+    if (theta_i[0] > min_eta and theta_i[1] > min_del and theta_i[2] > min_sig and 
+        theta_i[0] < max_eta and theta_i[1] < max_del and theta_i[2] < max_sig):
+        is_valid_point = True
+    else:
+        is_valid_point = False
+        print("found invalid point")
+    if is_valid_point and neglogpi_helper(theta_i) - neglogpiMAP < delta_pi:
         quad_points.append(theta_i)
 quad_points = np.array(quad_points)
+quad_end = time.time()
+print(f"Quad points checking time: {quad_end-quad_start} seconds")
 
 # %%
 # scatter plot of quadrature points
@@ -835,12 +848,12 @@ ax.set_ylabel(r'$\delta$')
 ax.set_zlabel(r'$\sigma$')
 ax.set_title('Quadrature Points')
 
-# #%% Saving (scaled) quadrature points for Paraview plot
+#%% Saving (scaled) quadrature points for plot
 # quad_pts_scaled = quad_points.copy()
 # quad_pts_scaled[:,0] = quad_pts_scaled[:,0]*2000
 # quad_pts_scaled[:,2] = quad_pts_scaled[:,2]*10000
 # header = "eta, delta, sigma"
-# np.savetxt("images/quad_points_scaled.txt", quad_pts_scaled, delimiter=",", header=header, fmt='%10.10f', comments="")
+# np.savetxt("images/quad_points_3D.txt", quad_points, delimiter=",", header=header, fmt='%10.10f', comments="")
 
 #%%
 # precompute pi(theta|y) at quad points and scale to integrate to 1
