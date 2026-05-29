@@ -629,7 +629,7 @@ if dim == 2:
 elif dim == 3:
     # r_p = 80; r_w = 184; r_u = 220
     r_p = 100; r_w = 199; r_u = 237
-precon = 'weakest'
+precon = 'prior'
 
 if precon == 'unprecon':
     pretheta[0] = 0.0
@@ -646,8 +646,8 @@ if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, problem)
 #%%
 %%prun
-ne = 10
-nd = 10
+ne = 1
+nd = 5
 ns = 1
 if dim == 2:
     eta_range = np.linspace(0.0015,0.02,ne)
@@ -842,7 +842,11 @@ print(f"Quad points checking time: {quad_end-quad_start} seconds")
 # scatter plot of quadrature points
 fig = plt.figure(figsize=(10,10))
 ax = fig.add_subplot(projection='3d')
-ax.scatter(quad_points[:,0],quad_points[:,1],quad_points[:,2],color='red',label='quadrature points') 
+ax.scatter(quad_points[:,0],quad_points[:,1],quad_points[:,2],color='black',label='quadrature points')
+ax.scatter(0.02, 60, 0.01, color='green') 
+ax.scatter(0.04, 30, 0.01, color='green') 
+ax.scatter(0.08, 15, 0.01, color='green') 
+ax.scatter(theta_MAP[0], theta_MAP[1], theta_MAP[2], color='red') 
 ax.set_xlabel(r'$\eta$')
 ax.set_ylabel(r'$\delta$')
 ax.set_zlabel(r'$\sigma$')
@@ -853,7 +857,7 @@ ax.set_title('Quadrature Points')
 # quad_pts_scaled[:,0] = quad_pts_scaled[:,0]*2000
 # quad_pts_scaled[:,2] = quad_pts_scaled[:,2]*10000
 # header = "eta, delta, sigma"
-# np.savetxt("images/quad_points_3D.txt", quad_points, delimiter=",", header=header, fmt='%10.10f', comments="")
+# np.savetxt("images/quad_points.txt", quad_points, delimiter=",", header=header, fmt='%10.10f', comments="")
 
 #%%
 # precompute pi(theta|y) at quad points and scale to integrate to 1
