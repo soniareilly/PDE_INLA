@@ -84,7 +84,7 @@ def mv_k(mv, n):
         mv_n[i].axpy(1.0, mv[i])
     return mv_n
 
-def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem):
+def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False):
     '''
     Solve inverse problem
     Output: posterior object and mg = mu_u0^T Q_u0 + y^T Q_eps A
@@ -107,7 +107,7 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem):
     [u,m,p] = problem.generate_vector()
     p = neg_adj_y.copy()
     for i in range(p.nsteps):
-        p.data[i] *= (presigma**2)/sigma**2
+        p.data[i] *= 1/sigma**2
     # mg = -Q_pr mu_pr - A^T Q_eps y
     mg = problem.generate_vector(PARAMETER)
     grad_norm = problem.evalGradientParameter([u,m,p], mg)
@@ -141,13 +141,17 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem):
     posterior = GaussianLRPosterior(prior, lmbda_new, V_new, precon)
 
     # Compute posterior mean
-    H.misfit_only = False
-    solver = CGSolverSteihaug()
-    solver.set_operator(H)
-    solver.set_preconditioner( posterior.Hlr )
-    solver.parameters["print_level"] = -1
-    solver.parameters["rel_tolerance"] = 1e-6
-    solver.solve(m, -mg)
+    if use_CG:
+        H.misfit_only = False
+        solver = CGSolverSteihaug()
+        solver.set_operator(H)
+        solver.set_preconditioner( posterior.Hlr )
+        solver.parameters["print_level"] = -1
+        solver.parameters["rel_tolerance"] = 1e-6
+        solver.solve(m, -mg)
+    else:
+        H = posterior.Hlr
+        H.solve(m,-mg)
     posterior.mean = m
     
     return posterior,mg,lmbda_new,V_new
@@ -344,7 +348,7 @@ def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbd
     return output,gauss_evals
 
 # %%
-dim = 3
+dim = 2
 # ******************** 2D Problem Setup ****************************
 if dim == 2:
     ## Import 2D mesh
@@ -503,7 +507,7 @@ tol = 1e-2
 # %% Precompute -A^T y in MAP point
 # note -- problem contains the true noise variance in misfit. Will be overwritten in computation.
 problem = TimeDependentAD(mesh, [Vh2,Vh,Vh2], prior, misfit, simulation_times, kappa, wind_velocity, True)
-problem.misfit.noise_variance = pretheta[2]
+problem.misfit.noise_variance = 1
 # This computes -A^T Q_eps y, so -A^T y with sigma = 1
 [u0,m0,neg_adj_y] = problem.generate_vector()
 problem.solveFwd(u0, [u0,m0,neg_adj_y])
@@ -586,22 +590,82 @@ if save_spectra:
     header = "r \t\t unprecon \t\t weakest \t\t prior1 \t\t prior2 \t\t prior3"
     np.savetxt("images/spectra_3DAD_full.txt", np.column_stack((np.arange(1,r+1,1), lmbda_unprecon, lmbda_weak, l_pr1_scaled, l_pr2_scaled, l_pr3_scaled[0:r])), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
+#%%
+error_plot = False
+if error_plot:
+    # low rank approx
+    theta = np.array([0.0075, 25, 0.01])
+    lmbda_pr, V_pr = LowRankApprox(theta, 250, problem)
+    lmbda_weak, V_weak = LowRankApprox(pretheta, 250, problem)
+    lmbda_un, V_un = LowRankApprox(np.array([0, 1, 1]), 250, problem)
+    # true values
+    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_pr, V_pr, neg_adj_y, theta, problem, use_CG=True)
+    uQu = 0.5*mg.inner(posterior.mean)
+    det_ratio = 0.0
+    for ll in posterior.d:
+        det_ratio += 0.5*np.log(1+ll)
+
+    # ranks = np.linspace(11, 80, 24)
+    ranks = np.linspace(11, 80, 70)
+    e1_pr = np.zeros(len(ranks)); e2_pr = np.zeros(len(ranks))
+    e1_weak = np.zeros(len(ranks)); e2_weak = np.zeros(len(ranks))
+    e1_un = np.zeros(len(ranks)); e2_un = np.zeros(len(ranks))
+    for idx in range(len(ranks)):
+        r_trunc = int(ranks[idx])
+        lmbda_trunc_pr = lmbda_pr[0:r_trunc-1]
+        lmbda_trunc_weak = lmbda_weak[0:r_trunc-1]
+        lmbda_trunc_un = lmbda_un[0:r_trunc-1]
+        V_trunc_pr = MultiVector(V_pr[0], r_trunc-1)
+        V_trunc_weak = MultiVector(V_weak[0], r_trunc-1)
+        V_trunc_un = MultiVector(V_un[0], r_trunc-1)
+        for i in range(r_trunc-1):
+            V_trunc_pr[i][:] = V_pr[i]
+            V_trunc_weak[i][:] = V_weak[i]
+            V_trunc_un[i][:] = V_un[i]
+
+        posteriorNoCG_pr,mgNoCG_pr,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_pr, V_trunc_pr, neg_adj_y, theta, problem)
+        e1_pr[idx] = det_ratio
+        for ll in posteriorNoCG_pr.d:
+            e1_pr[idx] -= 0.5*np.log(1+ll)
+        e2_pr[idx] = np.abs(uQu-0.5*mgNoCG_pr.inner(posteriorNoCG_pr.mean))
+
+        posteriorNoCG_weak,mgNoCG_weak,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_weak, V_trunc_weak, neg_adj_y, pretheta, problem)
+        e1_weak[idx] = det_ratio
+        for ll in posteriorNoCG_weak.d:
+            e1_weak[idx] -= 0.5*np.log(1+ll)
+        e2_weak[idx] = np.abs(uQu-0.5*mgNoCG_weak.inner(posteriorNoCG_weak.mean))
+
+        posteriorNoCG_un,mgNoCG_un,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_un, V_trunc_un, neg_adj_y, np.array([0,1,1]), problem)
+        e1_un[idx] = det_ratio
+        for ll in posteriorNoCG_un.d:
+            e1_un[idx] -= 0.5*np.log(1+ll)
+        e2_un[idx] = np.abs(uQu-0.5*mgNoCG_un.inner(posteriorNoCG_un.mean))
+    plt.semilogy(ranks, e1_pr, color="green", label="e1 PP")
+    plt.semilogy(ranks, e2_pr, color="green", linestyle="--", label="e2 PP")
+    plt.semilogy(ranks, e1_weak, color="orange", label="e1 WP")
+    plt.semilogy(ranks, e2_weak, color="orange", linestyle="--", label="e2 WP")
+    plt.semilogy(ranks, e1_un, color="blue", label="e1 UP")
+    plt.semilogy(ranks, e2_un, color="blue", linestyle="--", label="e2 UP")
+    plt.legend()
+    plt.xlabel('rank')
+    plt.ylabel('error')
+
+    # header = "r \t\t e1_pr \t\t e1_weak \t\t e1_un \t\t e2_pr \t\t e2_weak \t\t e2_un"
+    # np.savetxt("images/log_pi_error.txt", np.column_stack((ranks, e1_pr, e1_weak, e1_un, e2_pr, e2_weak, e2_un)), delimiter="\t", header=header, fmt='%10.14f', comments="")
+
+    cutoff = 1e-2
+    r_p_err = np.argmax(e1_pr+e2_pr < cutoff)+1
+    r_w_err = np.argmax(e1_weak+e2_weak < cutoff)+1
+    r_u_err = np.argmax(e1_un+e2_un < cutoff)+1
+
+# nb.plot(dl.Function(Vh,posterior.mean))
+# true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
+
 # %% Error in trace for various ranks k. Uses theta3 as true theta
 error_plot = False
-posterior_mean_save = False
 if error_plot:
     posterior,mg,lmbda_new,V_new = ComputePosterior(theta3, lmbda_prior3, V_prior3, neg_adj_y, [theta3[0], theta3[1], theta3[2]], problem)
     true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
-
-    # Save posterior mean to file
-    if posterior_mean_save:
-        posterior_mean_field = dl.Function(Vh)
-        post_mean_values = posterior.mean.get_local()
-        posterior_mean_field.vector().set_local(post_mean_values)
-        posterior_mean_field.rename("Posterior Mean", "label")
-        pvd_output = dl.File("posterior_mean_{0}.pvd".format(verts))
-        pvd_output << posterior_mean_field
-
     rs = np.arange(5, 100, 1)
     errs_prior,r_p_err, = PostCovError(theta3, lmbda_prior3, V_prior3, neg_adj_y, theta3, true_trace, rs, tol, problem)
     errs_weak,r_w_err = PostCovError(theta3, lmbda_weak, V_weak, neg_adj_y, np.array([min_eta, 1.0, 1.0]), true_trace, rs, tol, problem)
@@ -629,7 +693,7 @@ if dim == 2:
 elif dim == 3:
     # r_p = 80; r_w = 184; r_u = 220
     r_p = 100; r_w = 199; r_u = 237
-precon = 'prior'
+precon = 'weakest'
 
 if precon == 'unprecon':
     pretheta[0] = 0.0
@@ -646,8 +710,8 @@ if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, problem)
 #%%
 %%prun
-ne = 1
-nd = 5
+ne = 10
+nd = 10
 ns = 1
 if dim == 2:
     eta_range = np.linspace(0.0015,0.02,ne)
@@ -777,8 +841,12 @@ def theta_of_z(z):
 
 # %%
 # for each coordinate of z, find its values with significant probability
-delta_z = 0.8
-delta_pi = 3
+if dim == 2:
+    delta_z = 1
+    delta_pi = 2.5
+if dim == 3:
+    delta_z = 0.8
+    delta_pi = 3
 maxiter = 20
 
 z_highprob = [np.array([0.0]) for i in range(ntheta)]
@@ -843,9 +911,10 @@ print(f"Quad points checking time: {quad_end-quad_start} seconds")
 fig = plt.figure(figsize=(10,10))
 ax = fig.add_subplot(projection='3d')
 ax.scatter(quad_points[:,0],quad_points[:,1],quad_points[:,2],color='black',label='quadrature points')
-ax.scatter(0.02, 60, 0.01, color='green') 
-ax.scatter(0.04, 30, 0.01, color='green') 
-ax.scatter(0.08, 15, 0.01, color='green') 
+if dim==3:
+    ax.scatter(0.02, 60, 0.01, color='green') 
+    ax.scatter(0.04, 30, 0.01, color='green') 
+    ax.scatter(0.08, 15, 0.01, color='green') 
 ax.scatter(theta_MAP[0], theta_MAP[1], theta_MAP[2], color='red') 
 ax.set_xlabel(r'$\eta$')
 ax.set_ylabel(r'$\delta$')
