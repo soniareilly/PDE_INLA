@@ -1,4 +1,4 @@
-# %%
+ # %%
 import dolfin as dl
 import ufl
 import numpy as np
@@ -168,7 +168,7 @@ def neg_log_hyperprior(theta, hyp_pr_params):
 
 # -log pi(theta | y) (- log posterior marginal joint pdf of theta)
 # warning: changes noise variance in problem.misfit for each theta
-def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem):
+def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem, use_CG=False):
     preeta, predelta, presigma = pretheta
     eta, delta, sigma = theta
 
@@ -184,7 +184,7 @@ def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, pro
         V_new[i][:] = V[i]
 
     # compute new posterior
-    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_new, V_new, neg_adj_y, pretheta, problem)
+    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_new, V_new, neg_adj_y, pretheta, problem, use_CG)
     
     # -log(|Q_pr|/|Q_post|)
     det_ratio = 0.0
@@ -594,7 +594,7 @@ if save_spectra:
 error_plot = False
 if error_plot:
     # low rank approx
-    theta = np.array([0.0075, 25, 0.01])
+    theta = np.array([0.015, 12.5, 0.01])
     lmbda_pr, V_pr = LowRankApprox(theta, 250, problem)
     lmbda_weak, V_weak = LowRankApprox(pretheta, 250, problem)
     lmbda_un, V_un = LowRankApprox(np.array([0, 1, 1]), 250, problem)
@@ -627,19 +627,19 @@ if error_plot:
         e1_pr[idx] = det_ratio
         for ll in posteriorNoCG_pr.d:
             e1_pr[idx] -= 0.5*np.log(1+ll)
-        e2_pr[idx] = np.abs(uQu-0.5*mgNoCG_pr.inner(posteriorNoCG_pr.mean))
+        e2_pr[idx] = uQu-0.5*mgNoCG_pr.inner(posteriorNoCG_pr.mean)
 
         posteriorNoCG_weak,mgNoCG_weak,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_weak, V_trunc_weak, neg_adj_y, pretheta, problem)
         e1_weak[idx] = det_ratio
         for ll in posteriorNoCG_weak.d:
             e1_weak[idx] -= 0.5*np.log(1+ll)
-        e2_weak[idx] = np.abs(uQu-0.5*mgNoCG_weak.inner(posteriorNoCG_weak.mean))
+        e2_weak[idx] = uQu-0.5*mgNoCG_weak.inner(posteriorNoCG_weak.mean)
 
         posteriorNoCG_un,mgNoCG_un,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_un, V_trunc_un, neg_adj_y, np.array([0,1,1]), problem)
         e1_un[idx] = det_ratio
         for ll in posteriorNoCG_un.d:
             e1_un[idx] -= 0.5*np.log(1+ll)
-        e2_un[idx] = np.abs(uQu-0.5*mgNoCG_un.inner(posteriorNoCG_un.mean))
+        e2_un[idx] = uQu-0.5*mgNoCG_un.inner(posteriorNoCG_un.mean)
     plt.semilogy(ranks, e1_pr, color="green", label="e1 PP")
     plt.semilogy(ranks, e2_pr, color="green", linestyle="--", label="e2 PP")
     plt.semilogy(ranks, e1_weak, color="orange", label="e1 WP")
@@ -654,38 +654,13 @@ if error_plot:
     # np.savetxt("images/log_pi_error.txt", np.column_stack((ranks, e1_pr, e1_weak, e1_un, e2_pr, e2_weak, e2_un)), delimiter="\t", header=header, fmt='%10.14f', comments="")
 
     cutoff = 1e-2
-    r_p_err = np.argmax(e1_pr+e2_pr < cutoff)+1
-    r_w_err = np.argmax(e1_weak+e2_weak < cutoff)+1
-    r_u_err = np.argmax(e1_un+e2_un < cutoff)+1
+    r_p_err = int(ranks[0]) + np.argmax((e1_pr+e2_pr) < cutoff)+1
+    r_w_err = int(ranks[0]) + np.argmax((e1_weak+e2_weak) < cutoff)+1
+    r_u_err = int(ranks[0]) + np.argmax((e1_un+e2_un) < cutoff)+1
+    print(r_p_err, r_w_err, r_u_err)
 
 # nb.plot(dl.Function(Vh,posterior.mean))
 # true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
-
-# %% Error in trace for various ranks k. Uses theta3 as true theta
-error_plot = False
-if error_plot:
-    posterior,mg,lmbda_new,V_new = ComputePosterior(theta3, lmbda_prior3, V_prior3, neg_adj_y, [theta3[0], theta3[1], theta3[2]], problem)
-    true_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
-    rs = np.arange(5, 100, 1)
-    errs_prior,r_p_err, = PostCovError(theta3, lmbda_prior3, V_prior3, neg_adj_y, theta3, true_trace, rs, tol, problem)
-    errs_weak,r_w_err = PostCovError(theta3, lmbda_weak, V_weak, neg_adj_y, np.array([min_eta, 1.0, 1.0]), true_trace, rs, tol, problem)
-    errs_unprecon,r_u_err = PostCovError(theta3, lmbda_unprecon, V_unprecon, neg_adj_y, np.array([0.0, 1.0, 1.0]), true_trace, rs, tol, problem)
-
-    print(f'Ranks from error: r_p = {r_p_err}, r_w = {r_w_err}, r_u = {r_u_err}')
-
-    # Plot error as a function of rank for 3 methods
-    fig = plt.figure(figsize=(10,7.2))
-    plt.rcParams.update({'font.size': 20})
-    plt.semilogy(rs, errs_unprecon, linewidth=3, label=rf'$\eta=${0}')
-    plt.semilogy(rs, errs_weak, linewidth=3, label=rf'$\eta=${min_eta}')
-    plt.semilogy(rs, errs_prior, linewidth=3, label=rf'$\eta=${theta3[0]}')
-    plt.xlabel('rank')
-    plt.ylabel(r'relative error in $Tr(Q_{post}^{-1})$')
-    plt.legend()
-
-# # #%% Save error data
-# # header_err = "r \t\t unprecon \t\t weakest \t\t prior"
-# # np.savetxt("images/trace_errors.txt", np.column_stack((rs, errs_unprecon, errs_weak, errs_prior)), delimiter="\t", header=header_err, fmt='%10.14f', comments="")
 
 # %% Find low rank approx of prior-to-posterior update
 if dim == 2:
@@ -710,8 +685,8 @@ if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, problem)
 #%%
 %%prun
-ne = 10
-nd = 10
+ne = 1
+nd = 1
 ns = 1
 if dim == 2:
     eta_range = np.linspace(0.0015,0.02,ne)
@@ -731,7 +706,7 @@ for i in range(len(eta_range)):
             if precon == 'prior':
                 pretheta = theta.tolist()
                 lmbda, V = LowRankApprox(pretheta, r, problem)
-            logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem)
+            logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem, use_CG=False)
             print('({0},{1},{2})'.format(i,j,k))
 
 #%%
@@ -787,7 +762,7 @@ def opt_callback(intermediate_result):
     # print(f"Iteration: {intermediate_result.nit}")
     print(f"Current x: {intermediate_result.x}")
     print(f"Objective value: {intermediate_result.fun}")
-theta0 = np.array([0.04, 30, 1e-2])
+theta0 = np.array([1, 10, 0.05])
 theta_opt = opt.minimize(neglogpi_helper,theta0,method='Nelder-Mead',callback=opt_callback, options={'disp':True,'xatol':1e-2,'fatol':1e-2})
 opt_end = time.time()
 print(f"Optimization time: {opt_end-opt_start} seconds")
