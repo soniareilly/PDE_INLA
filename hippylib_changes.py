@@ -12,9 +12,8 @@
 import dolfin as dl
 import ufl
 import numpy as np
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import numbers
-# import argparse
 
 import sys
 import os
