@@ -99,7 +99,9 @@ class SpaceTimePointwiseStateObservation(Misfit):
                 self.B.transpmult(self.Bu_snapshot, self.u_snapshot) 
                 out.store(self.u_snapshot, t)
         else:
-            pass   
+            pass    
+
+
 
 class TimeDependentAD:    
     def __init__(self, mesh, Vh, prior, misfit, simulation_times, diffusivity, wind_velocity, gls_stab):

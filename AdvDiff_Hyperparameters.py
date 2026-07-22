@@ -1,81 +1,29 @@
  # %%
 import dolfin as dl
-import ufl
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import scipy.optimize as opt
 from scipy.integrate import trapezoid
-#%matplotlib inline
 
 import sys
 import os
 os.environ["HIPPYLIB_BASE_DIR"] = '/home/sonia/research/hyperparam_marginal/hippylib'
 sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR') )
-sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR') + "/applications/ad_diff/" )
+# sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR') + "/applications/ad_diff/" )
 from hippylib import *
-from model_ad_diff import SpaceTimePointwiseStateObservation, TimeDependentAD
+# from model_ad_diff import SpaceTimePointwiseStateObservation, TimeDependentAD
 
-# modified hippylib code
-# model_ad_diff makes kappa no longer hardcoded
-# and adds support for different state and parameter function spaces
-# posterior adds version for unpreconditioned low rank decomp
-# prior changes Krylov solvers to LU/Cholesky for speed
+from hippylib_changes import *
 
 import logging
 logging.getLogger('FFC').setLevel(logging.WARNING)
-#logging.getLogger('UFL').setLevel(logging.WARNING)
 dl.set_log_active(False)
 
 import time
-import line_profiler
-#%load_ext line_profiler
 np.random.seed(42)
 
 # %%
-
-def v_boundary(x,on_boundary):
-    return on_boundary
-
-def q_boundary(x,on_boundary):
-    return x[0] < dl.DOLFIN_EPS and x[1] < dl.DOLFIN_EPS
-        
-def computeVelocityField(mesh):
-    Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
-    Wh = dl.FunctionSpace(mesh, 'Lagrange', 1)
-    mixed_element = dl.MixedElement([Xh.ufl_element(), Wh.ufl_element()])
-    XW = dl.FunctionSpace(mesh, mixed_element)
-
-    Re = dl.Constant(1e2)
-    
-    g = dl.Expression(('0.0','(x[0] < 1e-14) - (x[0] > 1 - 1e-14)'), degree=1)
-    bc1 = dl.DirichletBC(XW.sub(0), g, v_boundary)
-    
-    bc2 = dl.DirichletBC(XW.sub(1), dl.Constant(0), q_boundary, 'pointwise')
-    bcs = [bc1, bc2]
-    
-    vq = dl.Function(XW)
-    (v,q) = dl.split(vq)
-    (v_test, q_test) = dl.TestFunctions (XW)
-    
-    def strain(v):
-        return dl.sym(dl.grad(v))
-    
-    F = ( (2./Re)*dl.inner(strain(v),strain(v_test))+ dl.inner (dl.nabla_grad(v)*v, v_test)
-           - (q * dl.div(v_test)) + ( dl.div(v) * q_test) ) * dl.dx
-           
-    dl.solve(F == 0, vq, bcs, solver_parameters={"newton_solver":
-                                         {"relative_tolerance":1e-4, "maximum_iterations":100}})
-    
-#     plt.figure(figsize=(15,5))
-#     vh = dl.project(v,Xh)
-#     qh = dl.project(q,Wh)
-#     nb.plot(nb.coarsen_v(vh, mesh), subplot_loc=121,mytitle="Velocity")
-#     nb.plot(qh, subplot_loc=122,mytitle="Pressure")
-#     plt.show()
-        
-    return v
-
 # Helper function for slicing multivectors
 def mv_k(mv, n):
     mv_n = MultiVector(mv[0], n)
@@ -118,7 +66,6 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False
     
     # prior preconditioning
     if preeta == eta and predelta == delta:
-        precon = True
         lmbda_new = lmbda
         V_new = V
     # weakest or no preconditioning
@@ -135,10 +82,9 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False
         Omega = MultiVector(x[PARAMETER], k+pad)
         parRandom.normal(1., Omega)
         lmbda_new, V_new = singlePassG(H_temp, prior.R, prior.Rsolver, Omega, k)
-        precon = True
     # correcting for noise stdev used in low rank approx (presigma)
     lmbda_new = lmbda_new*(presigma**2)/(sigma**2)
-    posterior = GaussianLRPosterior(prior, lmbda_new, V_new, precon)
+    posterior = GaussianLRPosterior(prior, lmbda_new, V_new)
 
     # Compute posterior mean
     if use_CG:
@@ -374,14 +320,11 @@ if dim == 2:
     ## Observation points along building edges
     targets = np.loadtxt('targets/targets_2d.txt')
 
-    # # plot velocity field and target locations
-    # Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
-    # smaller_mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(557)) )
-    # vh = dl.project(wind_velocity,Xh)
-    # nb.plot(nb.coarsen_v(vh, smaller_mesh))
-    # # nb.plot(dl.Function(Vh,true_initial_condition),mytitle='IC and Sensor Locations')
-    # plt.scatter(targets[:,0],targets[:,1],color='red')
-    # plt.savefig("images/velocity_and_targets.pdf",bbox_inches='tight', pad_inches=0)
+    # plot velocity field and target locations
+    Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
+    vh = dl.project(wind_velocity,Xh)
+    nb.plot(vh)
+    plt.scatter(targets[:,0],targets[:,1],color='red')
 
 # ******************** 3D Problem Setup ****************************
 elif dim == 3:
@@ -666,9 +609,8 @@ if error_plot:
 if dim == 2:
     r_p = 50 ; r_w = 95; r_u = 110
 elif dim == 3:
-    # r_p = 80; r_w = 184; r_u = 220
     r_p = 100; r_w = 199; r_u = 237
-precon = 'weakest'
+precon = 'unprecon'
 
 if precon == 'unprecon':
     pretheta[0] = 0.0

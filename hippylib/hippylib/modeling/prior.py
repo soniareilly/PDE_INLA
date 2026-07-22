@@ -21,15 +21,8 @@ import math
 
 import numbers
 
-# import sys
-# import os
-# sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../../") )
-# # from hippylib import *
-
-# Changed path!!
-# was in modeling, so was ..algorithms.linalg, etc.
 from ..algorithms.linalg import MatMatMult, get_diagonal, amg_method, estimate_diagonal_inv2, Solver2Operator, Operator2Solver
-from ..algorithms.linSolvers import PETScLUSolver # changed to LU from Krylov
+from ..algorithms.linSolvers import PETScKrylovSolver
 from ..algorithms.traceEstimator import TraceEstimator
 from ..algorithms.multivector import MultiVector
 from ..algorithms.randomizedEigensolver import doublePass, doublePassG
@@ -37,7 +30,7 @@ from ..algorithms.randomizedEigensolver import doublePass, doublePassG
 from ..utils.random import parRandom
 from ..utils.vector2function import vector2Function
 
-from ..modeling import ExpressionModule
+from .expression import ExpressionModule
 
 class _RinvM:
     """
@@ -372,26 +365,20 @@ class SqrtPrecisionPDE_Prior(_Prior):
         
         varfM = dl.inner(trial,test)*dl.dx       
         self.M = dl.assemble(varfM)
-        self.Msolver = PETScLUSolver( self.Vh.mesh().mpi_comm() ) # *** CHANGED SOLVER TO LU ***
-        self.Msolver.set_operator( dl.as_backend_type(self.M) )
-#         self.Msolver = PETScKrylovSolver(self.Vh.mesh().mpi_comm(), "cg", "jacobi")
-#         self.Msolver.set_operator(self.M)
-#         self.Msolver.parameters["maximum_iterations"] = max_iter
-#         self.Msolver.parameters["relative_tolerance"] = rel_tol
-#         self.Msolver.parameters["error_on_nonconvergence"] = True
-#         self.Msolver.parameters["nonzero_initial_guess"] = False
+        self.Msolver = PETScKrylovSolver(self.Vh.mesh().mpi_comm(), "cg", "jacobi")
+        self.Msolver.set_operator(self.M)
+        self.Msolver.parameters["maximum_iterations"] = max_iter
+        self.Msolver.parameters["relative_tolerance"] = rel_tol
+        self.Msolver.parameters["error_on_nonconvergence"] = True
+        self.Msolver.parameters["nonzero_initial_guess"] = False
         
         self.A = dl.assemble( sqrt_precision_varf_handler(trial, test) )        
-        # I think this uses Cholesky when possible
-        # https://github.com/MiroK/DolfinSurface/blob/master/dolfin/la/PETScLUSolver.cpp, line 395
-        self.Asolver = PETScLUSolver( self.Vh.mesh().mpi_comm() ) # *** CHANGED SOLVER TO LU ***
-        self.Asolver.set_operator( dl.as_backend_type(self.A) )
-#         self.Asolver = PETScKrylovSolver(self.Vh.mesh().mpi_comm(), "cg", amg_method())
-#         self.Asolver.set_operator(self.A)
-#         self.Asolver.parameters["maximum_iterations"] = max_iter
-#         self.Asolver.parameters["relative_tolerance"] = rel_tol
-#         self.Asolver.parameters["error_on_nonconvergence"] = True
-#         self.Asolver.parameters["nonzero_initial_guess"] = False
+        self.Asolver = PETScKrylovSolver(self.Vh.mesh().mpi_comm(), "cg", amg_method())
+        self.Asolver.set_operator(self.A)
+        self.Asolver.parameters["maximum_iterations"] = max_iter
+        self.Asolver.parameters["relative_tolerance"] = rel_tol
+        self.Asolver.parameters["error_on_nonconvergence"] = True
+        self.Asolver.parameters["nonzero_initial_guess"] = False
         
         old_qr = dl.parameters["form_compiler"]["quadrature_degree"]
         dl.parameters["form_compiler"]["quadrature_degree"] = -1
@@ -499,7 +486,7 @@ def BiLaplacianPrior(Vh, gamma, delta, Theta = None, mean=None, rel_tol=1e-12, m
         varf_robin = dl.inner(trial,test)*dl.ds
         
         if robin_bc:
-            robin_coeff = dl.sqrt(delta*gamma)/dl.Constant(1.42) # rewritten so that gamma=0 does not give nan
+            robin_coeff = gamma*dl.sqrt(delta/gamma)/dl.Constant(1.42)
         else:
             robin_coeff = dl.Constant(0.)
         
