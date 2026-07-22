@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import scipy.optimize as opt
-from scipy.integrate import trapezoid
 
 import sys
 import os
@@ -14,6 +13,7 @@ from hippylib import *
 
 from hippylib_changes import *
 from hyperparam_marginal import *
+from quadrature import *
 from box_average_qoi import *
 
 import logging
@@ -29,7 +29,6 @@ dim = 2
 if dim == 2:
     ## Import 2D mesh
     # number of vertices in mesh (selects which mesh to import)
-    # current options are 253, 399, 557, 605, 729, 1225, 1879, 2363, 2779, 5443, 8335, 11521
     verts = 2363
     mesh = dl.refine( dl.Mesh("meshes/adv_diff_dofs_{0}.xml".format(verts)) )
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
@@ -60,7 +59,6 @@ if dim == 2:
 elif dim == 3:
     ## Import 3D mesh and advection velocity field (precomputed)
     verts = 7480
-
     mesh = dl.Mesh()
     hdf = dl.HDF5File(mesh.mpi_comm(), "velocity_fields/velocity_field_{0}.h5".format(verts), "r")
     hdf.read(mesh, "/mesh", False)
@@ -340,7 +338,7 @@ if dim == 2:
     r_p = 50 ; r_w = 95; r_u = 110
 elif dim == 3:
     r_p = 100; r_w = 199; r_u = 237
-precon = 'unprecon'
+precon = 'weakest'
 
 if precon == 'unprecon':
     pretheta[0] = 0.0
@@ -352,11 +350,9 @@ else:
     r = r_w
 
 # %% Compute -log pi for a range of thetas
-# # %%prun 
 if precon == 'weakest' or precon == 'unprecon':
     lmbda, V = LowRankApprox(pretheta, r, problem)
-#%%
-# # %%prun
+
 ne = 1
 nd = 1
 ns = 1
@@ -381,48 +377,35 @@ for i in range(len(eta_range)):
             logpi[i,j,k] = neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem, use_CG=False)
             print('({0},{1},{2})'.format(i,j,k))
 
-#%%
+# scaled to have max value 1 in order to avoid overflow errors
 pitheta = np.exp(-logpi+np.min(logpi))
-# #%%
-# etamesh,dmesh,smesh = np.meshgrid(eta_range, d_range, s_range, indexing='ij')
-# header = "eta \t\t delta \t\t sigma \t\t pi_theta"
-# np.savetxt("images/pi_theta_40x40x20.txt", np.column_stack((etamesh.ravel(), dmesh.ravel(), smesh.ravel(), pitheta.ravel())), delimiter="\t", header=header, fmt=('%g', '%g', '%g', '%e'), comments="")
-# %%
 
-sig_idx = 0
-# scaled arbitrarily to have max value 1 in order to avoid overflow errors
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.set_cmap('bone')
-plt.pcolormesh(d_range,eta_range,pitheta[:,:,sig_idx])
-plt.colorbar()
-# plt.title(r'$\pi(\eta, \delta | y), dofs={0}$'.format(dofs))
-plt.title(r'$\pi(\eta, \delta, \sigma | y)$')
-plt.ylabel(r'$\eta$')
-plt.xlabel(r'$\delta$')
-# plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
+save_pi_theta = True
+if save_pi_theta:
+    etamesh,dmesh,smesh = np.meshgrid(eta_range, d_range, s_range, indexing='ij')
+    header = "eta \t\t delta \t\t sigma \t\t pi_theta"
+    np.savetxt(f"images/pi_theta_{ne}x{nd}x{ns}.txt", np.column_stack((etamesh.ravel(), dmesh.ravel(), smesh.ravel(), pitheta.ravel())), delimiter="\t", header=header, fmt=('%g', '%g', '%g', '%e'), comments="")
 
-# %%
-eta_idx = 0; d_idx = 0
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.plot(s_range,pitheta[eta_idx,d_idx,:])
-plt.xlabel(r'$\sigma$')
-plt.ylabel(r'$\pi(\eta, \delta, \sigma|y)$')
+# plot pi_theta as a function of eta and delta
+if ne > 2 and nd > 2:
+    sig_idx = int(ns/2)
+    fig = plt.figure(figsize=(10,7.2))
+    plt.rcParams.update({'font.size': 16})
+    plt.set_cmap('bone')
+    plt.pcolormesh(d_range,eta_range,pitheta[:,:,sig_idx])
+    plt.colorbar()
+    plt.title(r'$\pi(\eta, \delta, \sigma | y)$')
+    plt.ylabel(r'$\eta$')
+    plt.xlabel(r'$\delta$')
 
-# %%
-
-# scaled arbitrarily to have max value 1 in order to avoid overflow errors
-fig = plt.figure(figsize=(10,7.2))
-plt.rcParams.update({'font.size': 16})
-plt.set_cmap('bone')
-plt.pcolormesh(s_range,eta_range,pitheta[:,d_idx,:])
-plt.colorbar()
-# plt.title(r'$\pi(\eta, \delta | y), dofs={0}$'.format(dofs))
-plt.title(rf'$\pi(\eta, \delta, \sigma | y), \: \delta = {d_range[d_idx]:.2f}$')
-plt.ylabel(r'$\eta$')
-plt.xlabel(r'$\sigma$')
-# plt.savefig("pi_gamma_delta.pdf",bbox_inches='tight', pad_inches=0)
+# plot pi_theta as a function of sigma
+if ns > 2:
+    eta_idx = int(ne/2); d_idx = int(nd/2)
+    fig = plt.figure(figsize=(10,7.2))
+    plt.rcParams.update({'font.size': 16})
+    plt.plot(s_range,pitheta[eta_idx,d_idx,:])
+    plt.xlabel(r'$\sigma$')
+    plt.ylabel(r'$\pi(\eta, \delta, \sigma|y)$')
 
 # %%
 ## Compute MAP point of pi(theta | y)
@@ -431,7 +414,6 @@ opt_start = time.time()
 def neglogpi_helper(theta):
     return neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, problem)
 def opt_callback(intermediate_result):
-    # print(f"Iteration: {intermediate_result.nit}")
     print(f"Current x: {intermediate_result.x}")
     print(f"Objective value: {intermediate_result.fun}")
 theta0 = np.array([1, 10, 0.05])
@@ -441,117 +423,25 @@ print(f"Optimization time: {opt_end-opt_start} seconds")
 
 theta_MAP = theta_opt.x
 print(f"MAP point of pi(theta|y): {theta_MAP}")
-# theta_MAP = np.array([3.45302293e-02, 3.39541763e+01, 9.75111448e-03])
 
-# %%
-## Find inverse Hessian at MAP point
+# %% Find quadrature points
 
-# choosing the finite difference dx's here is finicky -- can't be much smaller
+# choosing the finite difference deltas here is finicky -- can't be much smaller
 if dim == 2:
     dtheta = [1e-3,8e-1,1e-5]
-elif dim == 3:
-    dtheta = [1e-3,2,1e-5]
-ntheta = np.size(dtheta)
-
-Hess_MAP = np.zeros((ntheta,ntheta))
-
-# compute necessary function evaluations for Hessian finite difference estimation
-neglogpiMAP = neglogpi_helper(theta_MAP)
-plustwo = np.zeros((ntheta,ntheta))
-plusone = np.zeros(ntheta)
-minusone = np.zeros(ntheta)
-for i in range(ntheta):
-    dtheta_i = np.zeros(ntheta)
-    dtheta_i[i] = dtheta[i]
-    plusone[i] = neglogpi_helper(theta_MAP + dtheta_i)
-    minusone[i] = neglogpi_helper(theta_MAP - dtheta_i)
-    for j in range(i+1,ntheta):
-        dtheta_i_j = np.zeros(ntheta)
-        dtheta_i_j[i] = dtheta[i]; dtheta_i_j[j] = dtheta[j]
-        plustwo[i,j] = neglogpi_helper(theta_MAP + dtheta_i_j)
-        plustwo[j,i] = plustwo[i,j]
-# compute Hessian using precomputed function evaluations
-for i in range(ntheta):
-    Hess_MAP[i,i] = (minusone[i] - 2*neglogpiMAP + plusone[i])/dtheta[i]**2
-    for j in range(i+1,ntheta):
-        Hess_MAP[i,j] = (plustwo[i,j] + neglogpiMAP - plusone[i] - plusone[j])/dtheta[i]/dtheta[j]
-        Hess_MAP[j,i] = Hess_MAP[i,j]
-
-H_MAP_inv = np.linalg.inv(Hess_MAP)
-
-# find principal directions
-Hinv_lam,Hinv_V = np.linalg.eig(H_MAP_inv)
-Hinv_L_sqrt = np.diag(np.sqrt(Hinv_lam))
-print(Hinv_L_sqrt)
-def theta_of_z(z):
-    return theta_MAP + np.dot(Hinv_V,np.dot(Hinv_L_sqrt,z))
-
-# %%
-# for each coordinate of z, find its values with significant probability
-if dim == 2:
     delta_z = 1
     delta_pi = 2.5
-if dim == 3:
+elif dim == 3:
+    dtheta = [1e-3,2,1e-5]
     delta_z = 0.8
     delta_pi = 3
 maxiter = 20
 
-z_highprob = [np.array([0.0]) for i in range(ntheta)]
-for idx in range(ntheta):
-    z = np.zeros(ntheta)
-    z[idx] = delta_z
-    count = 0
-    while all(theta_of_z(z)>0) and neglogpi_helper(theta_of_z(z)) - neglogpiMAP < delta_pi and count < maxiter:
-        z_highprob[idx] = np.append(z_highprob[idx],z[idx])
-        z[idx] += delta_z
-        count += 1
-        print(count)
-    count = 0
-    z[idx] = -delta_z
-    while all(theta_of_z(z)>0) and neglogpi_helper(theta_of_z(z)) - neglogpiMAP < delta_pi and count < maxiter:
-        z_highprob[idx] = np.append(z_highprob[idx],z[idx])
-        z[idx] -= delta_z
-        count += 1
-        print(count)
-
-# %%
-# Find quadrature points
-
-# list pairs of points given two lists of point locations
-# e.g., inputs [[0 0],[1 1]] and [2 3], output [[0 0 2],[1 1 2],[0 0 3],[1 1 3]]
-# first input must be list of lists, second must be list
-def pt_pairs(list1, list2):
-    newlist = []
-    for i in range(len(list1)):
-        for j in range(len(list2)):
-            newlist.append(list1[i]+[list2[j]])
-    return newlist
-
-quad_start = time.time()
-# use to recursively find all combinations of possible points
-all_points = [[zval] for zval in z_highprob[0]]
-if ntheta > 1:
-    for idx in range(1,ntheta):
-        all_points = pt_pairs(all_points, z_highprob[idx])
-
-# search through them for only the ones with high enough probability
-# could be more efficient -- don't recalculate along axes, and/or store values for later
-quad_points = []
-print('Points to be checked: {0}'.format(len(all_points)))
-for i in range(len(all_points)):
-    print(i)
-    theta_i = theta_of_z(np.array(all_points[i]))
-    if (theta_i[0] > min_eta and theta_i[1] > min_del and theta_i[2] > min_sig and 
-        theta_i[0] < max_eta and theta_i[1] < max_del and theta_i[2] < max_sig):
-        is_valid_point = True
-    else:
-        is_valid_point = False
-        print("found invalid point")
-    if is_valid_point and neglogpi_helper(theta_i) - neglogpiMAP < delta_pi:
-        quad_points.append(theta_i)
-quad_points = np.array(quad_points)
-quad_end = time.time()
-print(f"Quad points checking time: {quad_end-quad_start} seconds")
+# tests if theta is in the support of the hyperprior, to avoid quad points outside the support
+def hyperprior_support(theta):
+    return uniform_hyperprior_support(theta, hyp_pr_params)
+# find quadrature points and their pi_theta values
+quad_points, pi_theta_quad, d_area = find_quad_points(neglogpi_helper, theta_MAP, dtheta, delta_z, delta_pi, maxiter, hyperprior_support)
 
 # %%
 # scatter plot of quadrature points
@@ -568,18 +458,6 @@ ax.set_ylabel(r'$\delta$')
 ax.set_zlabel(r'$\sigma$')
 ax.set_title('Quadrature Points')
 
-#%%
-# precompute pi(theta|y) at quad points and scale to integrate to 1
-# (if not increasing resolution, could store these from earlier)
-pi_theta_quad = np.zeros(quad_points.shape[0])
-for i in range(quad_points.shape[0]):
-    pi_theta_quad[i] = np.exp(-neglogpi_helper(quad_points[i,:])+neglogpiMAP)
-
-# find Z such that 1/Z*pi(theta|y) integrates to ~1 using quadrature
-d_area = np.sqrt(np.prod(Hinv_lam))
-Z = np.sum(pi_theta_quad)*d_area
-# scale evaluations of pi(theta|y)
-pi_theta_quad = pi_theta_quad/Z
 
 #%%
 ### Compute marginal distribution of QoI that is a linear scalar function of u_0
@@ -636,43 +514,8 @@ plt.xlabel(r"$q$")
 plt.tight_layout()
 plt.legend()
 
-# #%%
-# # Save data
-# header = "q \t\t theta_opt \t\t theta_1 \t\t theta_3 \t\t marginalized"
-# np.savetxt("images/piQoI.txt", np.column_stack((qoi_range, pi_qoi_th_true, pi_qoi_th_1, pi_qoi_th_3, pi_qoi)), delimiter="\t", header=header, fmt='%10.8f', comments="")
-# %%
-u_range = np.linspace(0.0,0.55,100)
-locations = [[0.3,0.7],[0.45,0.55]]
-true_u0_fun = dl.Function(Vh,true_initial_condition)
-pi_u_0_i_evals,gauss_evals = posterior_marginals(locations, u_range, quad_points, pi_theta_quad, d_area, lmbda, V, neg_adj_y, pretheta, problem)
-# %%
-pi_u_0_i_evals_norms = trapezoid(pi_u_0_i_evals,dx=u_range[1]-u_range[0],axis=1)
-pi_u_0_i_evals_normalized = (pi_u_0_i_evals.T/pi_u_0_i_evals_norms).T
-for idx in range(quad_points.shape[0]):
-    gauss_evals[:,:,idx] = (gauss_evals[:,:,idx].T/pi_u_0_i_evals_norms).T
-header = "x \t\t u_0_1 \t\t u_0_2"
-# np.savetxt("images/pi_u_0.txt", np.column_stack((u_range, pi_u_0_i_evals_normalized.T)), delimiter="\t", header=header, fmt='%10.8f', comments="")
+save_qoi_data = False
+if save_qoi_data:
+    header = "q \t\t theta_opt \t\t theta_1 \t\t theta_3 \t\t marginalized"
+    np.savetxt("images/piQoI.txt", np.column_stack((qoi_range, pi_qoi_th_true, pi_qoi_th_1, pi_qoi_th_3, pi_qoi)), delimiter="\t", header=header, fmt='%10.8f', comments="")
 
-# %%
-for ii in range(len(locations)):
-    plt.figure(figsize=(10,4.5))
-    plt.rcParams.update({'font.size': 16})
-    plt.plot(u_range,pi_u_0_i_evals_normalized[ii,:],linewidth=3,color='green')
-    plt.axvline(x=true_u0_fun(locations[ii]), color='purple', linestyle="-.", label=r"true $u_0^i$")
-    #plt.ticklabel_format(axis='both', style='sci', scilimits=(0,0))
-    plt.title(f'Posterior Marginal Initial Condition, location {locations[ii]}')
-    plt.ylabel(r"$\log \pi(u_0^i|y)$")
-    plt.xlabel(r"$u_0$")
-    plt.tight_layout()
-    plt.legend()
-
-# %%
-xy = mesh.coordinates()
-
-fig = plt.figure(figsize=(10,7.2))
-im = nb.plot(dl.Function(Vh,true_initial_condition),mytitle='True Initial Condition',colorbar=False)
-plt.plot(locations[0][0],locations[0][1],'ro',markersize=8,label=r'$x_1$') 
-plt.plot(locations[1][0],locations[1][1],'rs',markersize=10,label=r'$x_2$') 
-plt.legend(loc='upper right', bbox_to_anchor=(0.9, 0.3))
-fig.colorbar(im, pad=0.05)
- # %%
