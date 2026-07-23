@@ -1,9 +1,7 @@
 import dolfin as dl
 import numpy as np
-import sys
-import os
-sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../../") )
 from hippylib import *
+from hippylib.algorithms.cgsolverSteihaug import CGSolverSteihaug
 from hippylib_changes import *
 from hyperparam_marginal import *
 

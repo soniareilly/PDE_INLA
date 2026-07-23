@@ -4,12 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import scipy.optimize as opt
-
-import sys
-import os
-os.environ["HIPPYLIB_BASE_DIR"] = '/home/sonia/research/hyperparam_marginal/hippylib'
-sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR') )
 from hippylib import *
+from hippylib.modeling.variables import STATE, PARAMETER, ADJOINT
 
 from hippylib_changes import *
 from hyperparam_marginal import *
@@ -52,7 +48,7 @@ if dim == 2:
     # plot velocity field and target locations
     Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
     vh = dl.project(wind_velocity,Xh)
-    nb.plot(vh)
+    dl.plot(vh)
     plt.scatter(targets[:,0],targets[:,1],color='red')
 
 # ******************** 3D Problem Setup ****************************
@@ -142,7 +138,7 @@ if dim == 2:
     ic_func = dl.Function(Vh)
     ic_func.vector()[:] = true_initial_condition
     ic_Vh2 = dl.project(ic_func, Vh2).vector()
-    # nb.show_solution(Vh2, ic_Vh2, utrue, "Solution")
+    show_solution(Vh2, ic_Vh2, utrue, mytitle="Solution")
 elif dim == 3 and save_fwd_soln_3d:
     # Create the PVD file
     file_pvd = dl.File("forward_sol_{0}.pvd".format(verts))
@@ -469,14 +465,19 @@ if dim == 2:
     ymin = 0.7; ymax = 0.9
     boxlims = np.array([xmin, xmax, ymin, ymax])
     fig, ax = plt.subplots()
-    nb.plot(dl.Function(Vh,true_initial_condition),mytitle='IC and Box Location')
+    ic = dl.Function(Vh)
+    ic.vector()[:] = true_initial_condition
+    plt.sca(ax)
+    plot_obj = dl.plot(ic)
+    ax.set_title("IC and Box Location")    
     rect = Rectangle((xmin, ymin), xmax-xmin, ymax-ymin, edgecolor='red', facecolor='none')
     ax.add_patch(rect)
+    fig.colorbar(plot_obj, ax=ax)
 elif dim == 3:
     xmin = 0.15; xmax = 0.3
     ymin = 0.7; ymax = 0.85
     zmin = 0.5; zmax = 0.65
-    boxlims = np.array([xmin, xmax, ymin, ymax])
+    boxlims = np.array([xmin, xmax, ymin, ymax, zmin, zmax])
 
 
 # print QoI(constant 1 function) to test error introduced by finite element approx
@@ -519,3 +520,5 @@ if save_qoi_data:
     header = "q \t\t theta_opt \t\t theta_1 \t\t theta_3 \t\t marginalized"
     np.savetxt("images/piQoI.txt", np.column_stack((qoi_range, pi_qoi_th_true, pi_qoi_th_1, pi_qoi_th_3, pi_qoi)), delimiter="\t", header=header, fmt='%10.8f', comments="")
 
+
+# %%

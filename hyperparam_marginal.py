@@ -1,10 +1,11 @@
 import dolfin as dl
 import numpy as np
-import sys
-import os
-sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../../") )
 from hippylib import *
 from hippylib_changes import *
+from hippylib.modeling.variables import STATE, PARAMETER, ADJOINT
+from hippylib.modeling.reducedHessian import ReducedHessian
+from hippylib.algorithms.lowRankOperator import LowRankOperator
+from hippylib.modeling.posterior import GaussianLRPosterior
 
 def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False):
     '''

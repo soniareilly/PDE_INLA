@@ -12,13 +12,59 @@
 import dolfin as dl
 import ufl
 import numpy as np
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import numbers
 
-import sys
-import os
-sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../../") )
 from hippylib import *
+from hippylib.modeling.misfit import Misfit
+from hippylib.modeling.pointwiseObservation import assemblePointwiseObservation
+from hippylib.modeling.timeDependentVector import TimeDependentVector
+from hippylib.modeling.variables import STATE, PARAMETER, ADJOINT
+from hippylib.algorithms.linalg import MatMatMult, get_diagonal, estimate_diagonal_inv2, Solver2Operator, Operator2Solver
+from hippylib.algorithms.linSolvers import PETScLUSolver
+from hippylib.algorithms.traceEstimator import TraceEstimator
+from hippylib.algorithms.multivector import MultiVector, MatMvMult, MvDSmatMult
+from hippylib.algorithms.randomizedEigensolver import doublePass, doublePassG
+
+from hippylib.utils.random import parRandom
+from hippylib.utils.vector2function import vector2Function
+
+
+def show_solution(Vh, ic, state, mytitle=None, times=[0, .4, 1., 2., 3., 4.]):
+    """
+    Replacement for hippylib.nb.show_solution.
+    Plot snapshots of a TimeDependentVector.
+    """
+    state.store(ic, 0)
+
+    ncols = 3
+    nrows = len(times) // ncols
+
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(18, 4*nrows),
+        squeeze=False
+    )
+
+    myu = dl.Function(Vh)
+
+    for ax, t in zip(axes.flatten(), times):
+        try:
+            state.retrieve(myu.vector(), t)
+        except:
+            print("Invalid time:", t)
+            continue
+
+        plt.sca(ax)
+        dl.plot(myu)
+        ax.set_title(
+            f"{mytitle + ' ' if mytitle else ''}at time {t}s"
+        )
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.show()
 
 # no change from hippylib adv_diff application
 class SpaceTimePointwiseStateObservation(Misfit):

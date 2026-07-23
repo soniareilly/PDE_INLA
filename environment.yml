@@ -1,0 +1,14 @@
+name: amortized
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.10
+  - fenics=2019.1.0
+  - numpy
+  - scipy
+  - matplotlib
+  - pip
+  - pip:
+      - hippylib==3.1.0
