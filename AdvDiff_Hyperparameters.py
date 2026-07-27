@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import scipy.optimize as opt
 from hippylib import *
-from hippylib.modeling.variables import STATE, PARAMETER, ADJOINT
+from hippylib.modeling.variables import STATE
 
 from hippylib_changes import *
 from hyperparam_marginal import *
@@ -128,9 +128,6 @@ problem_true.solveFwd(x[STATE], x)
 misfit.observe(x, misfit.d)
 parRandom.normal_perturb(sigma_true,misfit.d)
 misfit.noise_variance = sigma_true**2
-
-# # %%
-# modelVerify(problem_true, prior.mean, is_quadratic=True)
 
 # %% Plot/save forward solution
 save_fwd_soln_3d = False
@@ -376,7 +373,7 @@ for i in range(len(eta_range)):
 # scaled to have max value 1 in order to avoid overflow errors
 pitheta = np.exp(-logpi+np.min(logpi))
 
-save_pi_theta = True
+save_pi_theta = False
 if save_pi_theta:
     etamesh,dmesh,smesh = np.meshgrid(eta_range, d_range, s_range, indexing='ij')
     header = "eta \t\t delta \t\t sigma \t\t pi_theta"
@@ -490,10 +487,9 @@ qoi_range = np.linspace(0.1,0.275,100)
 pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
 
 #%%
-theta_true = theta_MAP
 theta1 = np.array([0.003, 50, 0.01])
 theta3 = np.array([0.015, 12.5, 0.01])
-pi_qoi_th_true = QoIdist_fixed_theta(qoi_range, theta_true, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
+pi_qoi_th_MAP = QoIdist_fixed_theta(qoi_range, theta_MAP, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
 pi_qoi_th_1 = QoIdist_fixed_theta(qoi_range, theta1, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
 pi_qoi_th_3 = QoIdist_fixed_theta(qoi_range, theta3, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
 
@@ -504,7 +500,7 @@ true_QoI = QoI(true_initial_condition, Vh, boxlims)
 # plot distribution of QoI
 plt.figure(figsize=(10,7.2))
 plt.rcParams.update({'font.size': 20})
-plt.plot(qoi_range,pi_qoi_th_true,linewidth=3,color='green', label=rf"$\theta^\ast$")
+plt.plot(qoi_range,pi_qoi_th_MAP,linewidth=3,color='green', label=rf"$\theta^\ast$")
 plt.plot(qoi_range,pi_qoi_th_1,linewidth=3,color='red', label=rf"$\theta_1$")
 plt.plot(qoi_range,pi_qoi_th_3,linewidth=3,color='orange', label=rf"$\theta_3$")
 plt.plot(qoi_range,pi_qoi,linewidth=3,color='black', label=r"marginalized")
@@ -518,7 +514,14 @@ plt.legend()
 save_qoi_data = False
 if save_qoi_data:
     header = "q \t\t theta_opt \t\t theta_1 \t\t theta_3 \t\t marginalized"
-    np.savetxt("images/piQoI.txt", np.column_stack((qoi_range, pi_qoi_th_true, pi_qoi_th_1, pi_qoi_th_3, pi_qoi)), delimiter="\t", header=header, fmt='%10.8f', comments="")
+    np.savetxt("images/piQoI.txt", np.column_stack((qoi_range, pi_qoi_th_MAP, pi_qoi_th_1, pi_qoi_th_3, pi_qoi)), delimiter="\t", header=header, fmt='%10.8f', comments="")
 
 
+# %%
+np.save("results/lmbda_weak.npy", lmbda)
+np.save("results/theta_MAP.npy", theta_MAP)
+np.save("results/quad_points.npy", quad_points)
+np.save("results/pi_theta_quad.npy", pi_theta_quad)
+np.save("results/pi_qoi.npy", pi_qoi)
+np.save("results/pi_qoi_th_MAP.npy", pi_qoi_th_MAP)
 # %%
