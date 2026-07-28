@@ -2,7 +2,7 @@ import dolfin as dl
 import numpy as np
 from hippylib import *
 from hippylib.algorithms.cgsolverSteihaug import CGSolverSteihaug
-from hippylib_changes import *
+import hippylib_changes as hc
 from hyperparam_marginal import *
 
 # average function of a box in the domain
@@ -45,7 +45,7 @@ def QoIadj(qoi, Vh, boxlims):
 def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, problem):
     output = np.zeros(len(qoi))
     # find Gaussian pi(qoi|theta,y)
-    prior = BiLaplacianPrior(problem.Vh[PARAMETER], theta[0]*theta[1], theta[1], robin_bc=True)
+    prior = hc.BiLaplacianPrior(problem.Vh[PARAMETER], theta[0]*theta[1], theta[1], robin_bc=True)
     prior.mean = dl.interpolate(dl.Constant(0.), problem.Vh[PARAMETER]).vector()
     posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem)
     # mean

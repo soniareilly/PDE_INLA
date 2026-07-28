@@ -1,11 +1,13 @@
 import dolfin as dl
 import numpy as np
 from hippylib import *
-from hippylib_changes import *
-from hippylib.modeling.variables import STATE, PARAMETER, ADJOINT
+import hippylib_changes as hc
+from hippylib.modeling.variables import PARAMETER
 from hippylib.modeling.reducedHessian import ReducedHessian
 from hippylib.algorithms.lowRankOperator import LowRankOperator
 from hippylib.modeling.posterior import GaussianLRPosterior
+from hippylib.algorithms.multivector import MultiVector
+from hippylib.utils.random import parRandom
 
 def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False):
     '''
@@ -19,7 +21,7 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False
     preeta, predelta, presigma = pretheta
     eta, delta, sigma = theta
     
-    prior = BiLaplacianPrior(problem.Vh[PARAMETER], eta*delta, delta, robin_bc=True)
+    prior = hc.BiLaplacianPrior(problem.Vh[PARAMETER], eta*delta, delta, robin_bc=True)
     prior.mean = dl.interpolate(dl.Constant(0.), problem.Vh[PARAMETER]).vector()
 
     problem.prior = prior
@@ -45,7 +47,7 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False
         V_new = V
     # weakest or no preconditioning
     else:
-        preprior = BiLaplacianPrior(problem.Vh[PARAMETER], preeta*predelta, predelta, robin_bc=True)
+        preprior = hc.BiLaplacianPrior(problem.Vh[PARAMETER], preeta*predelta, predelta, robin_bc=True)
         preprior.mean = dl.interpolate(dl.Constant(0.), problem.Vh[PARAMETER]).vector()
         # replace preprior with prior
         W = MultiVector(V)
@@ -56,7 +58,7 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False
         pad = 20 
         Omega = MultiVector(problem.generate_vector(PARAMETER), k+pad)
         parRandom.normal(1., Omega)
-        lmbda_new, V_new = singlePassG(H_temp, prior.R, prior.Rsolver, Omega, k)
+        lmbda_new, V_new = hc.singlePassG(H_temp, prior.R, prior.Rsolver, Omega, k)
     # correcting for noise stdev used in low rank approx (presigma)
     lmbda_new = lmbda_new*(presigma**2)/(sigma**2)
     posterior = GaussianLRPosterior(prior, lmbda_new, V_new)
@@ -137,7 +139,7 @@ def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, pro
 def LowRankApprox(pretheta, k, problem):
     preeta, predelta, presigma = pretheta
 
-    preprior = BiLaplacianPrior(problem.Vh[PARAMETER], preeta*predelta, predelta, robin_bc=True)
+    preprior = hc.BiLaplacianPrior(problem.Vh[PARAMETER], preeta*predelta, predelta, robin_bc=True)
     preprior.mean = dl.interpolate(dl.Constant(0.), problem.Vh[PARAMETER]).vector()
     problem.prior = preprior
     problem.misfit.noise_variance = presigma**2
@@ -147,7 +149,7 @@ def LowRankApprox(pretheta, k, problem):
     Omega = MultiVector(problem.generate_vector(PARAMETER), k+pad)
     parRandom.normal(1., Omega)
 
-    lmbda, V = singlePassG(H_misfit_only, preprior.R, preprior.Rsolver, Omega, k) 
+    lmbda, V = hc.singlePassG(H_misfit_only, preprior.R, preprior.Rsolver, Omega, k) 
     return lmbda, V
 
 # Helper function for slicing multivectors

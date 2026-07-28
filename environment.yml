@@ -9,6 +9,7 @@ dependencies:
   - numpy
   - scipy
   - matplotlib
+  - ipykernel
   - pip
   - pip:
       - hippylib==3.1.0
