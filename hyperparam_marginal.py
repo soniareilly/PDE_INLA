@@ -1,5 +1,8 @@
 import dolfin as dl
 import numpy as np
+import matplotlib.pyplot as plt
+import scipy.optimize as opt
+import time
 from hippylib import *
 import hippylib_changes as hc
 from hippylib.modeling.variables import PARAMETER
@@ -8,6 +11,132 @@ from hippylib.algorithms.lowRankOperator import LowRankOperator
 from hippylib.modeling.posterior import GaussianLRPosterior
 from hippylib.algorithms.multivector import MultiVector
 from hippylib.utils.random import parRandom
+
+def setup_adv_diff(dim, mesh_path, target_path, make_velocity_targets_plot=False):
+    """
+    Load in saved meshes and targets, load (3D) or compute (2D) wind velocity
+    """
+    if dim == 2:
+        ## Import 2D mesh
+        mesh = dl.refine( dl.Mesh(mesh_path) )
+        Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
+        Vh2 = dl.FunctionSpace(mesh, "Lagrange", 2)
+
+        ## Advection velocity field
+        wind_velocity = hc.computeVelocityField(mesh)
+
+        ## Initial Condition
+        ic_expr = dl.Expression(
+            'std::min(0.5,std::exp(-100*(std::pow(x[0]-0.35,2) +  std::pow(x[1]-0.7,2))))',
+            element=Vh2.ufl_element())
+    elif dim == 3:
+        ## Import 3D mesh and advection velocity field (precomputed)
+        mesh = dl.Mesh()
+        hdf = dl.HDF5File(mesh.mpi_comm(), mesh_path, "r")
+        hdf.read(mesh, "/mesh", False)
+        Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
+        Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
+        Vh2 = dl.FunctionSpace(mesh, "Lagrange", 2)
+
+        ## Advection velocity field
+        wind_velocity = dl.Function(Xh)
+        hdf.read(wind_velocity, "/velocity")
+        hdf.close()
+
+        ## Initial Condition
+        center = ((0.15,0.85,0.7))
+        width = 50.0
+        cutoff = 0.5
+        ic_expr = dl.Expression(
+            "std::min(cutoff, std::exp(-a * (std::pow(x[0]-x0, 2) + std::pow(x[1]-y0, 2) + std::pow(x[2]-z0, 2))))",
+            a=width, x0=center[0], y0=center[1], z0=center[2], cutoff = 0.5,
+            element=Vh2.ufl_element()
+        )
+    else:
+        raise ValueError("Dimension must be either 2 or 3")
+
+    print("Number of elements: {0}".format(mesh.num_cells()))
+    print("Number of dofs, first order: {0}".format(Vh.dim()))
+    print("Number of dofs, second order: {0}".format(Vh2.dim()))
+
+    true_initial_condition = dl.interpolate(ic_expr, Vh).vector()
+
+    ## Observation points
+    targets = np.loadtxt(target_path)
+
+    if dim == 2 and make_velocity_targets_plot:
+        Xh = dl.VectorFunctionSpace(mesh,'Lagrange', 2)
+        vh = dl.project(wind_velocity,Xh)
+        dl.plot(vh)
+        plt.scatter(targets[:,0],targets[:,1],color='red')
+
+    return (mesh, Vh, Vh2, wind_velocity, true_initial_condition, targets)
+
+def solve_fwd_problem(problem_setup, dim, mesh_vertices, nt, t_init, t_final, first_observation_time, observation_dt, sigma_true, prior_mean, kappa, save_3d_forward_solution=False):
+    mesh, Vh, Vh2, wind_velocity, true_initial_condition, targets = problem_setup
+    dt = t_final/nt
+    simulation_times = np.arange(t_init, t_final+.5*dt, dt)
+    observation_times = np.arange(first_observation_time, t_final+.5*dt, observation_dt)
+    print(observation_times)
+
+    print ("Number of observation points: {0}".format(targets.shape[0]) )
+    print ("Number of observation times: {0}".format(observation_times.shape[0]) )
+    # initialize observations
+    misfit = hc.SpaceTimePointwiseStateObservation(Vh2, observation_times, targets)
+
+    # Prior required by TimeDependentAD during setup (not used)
+    # covariance C = ((delta * (I - eta * Laplacian))^{-2}
+    prior_eta = 0.125
+    prior_delta = 8.0
+    prior = hc.BiLaplacianPrior(Vh, prior_eta*prior_delta, prior_delta, robin_bc=True)
+    prior.mean = dl.interpolate(dl.Constant(prior_mean), Vh).vector()
+
+    problem_true = hc.TimeDependentAD(mesh, [Vh2,Vh,Vh2], prior, misfit, simulation_times, kappa, wind_velocity, True)
+
+    # initialize vector in the state space
+    utrue = problem_true.generate_vector(STATE)
+    x = [utrue, true_initial_condition, None]
+    # solve forward problem
+    problem_true.solveFwd(x[STATE], x)
+    # observe solution and add error
+    misfit.observe(x, misfit.d)
+    np.random.seed(42)
+    parRandom.normal_perturb(sigma_true,misfit.d)
+    misfit.noise_variance = sigma_true**2
+
+    # Plot/save forward solution
+    if dim == 2:
+        ic_func = dl.Function(Vh)
+        ic_func.vector()[:] = true_initial_condition
+        ic_Vh2 = dl.project(ic_func, Vh2).vector()
+        hc.show_solution(Vh2, ic_Vh2, utrue, mytitle="Solution")
+    elif dim == 3 and save_3d_forward_solution:
+        # Create the PVD file
+        file_pvd = dl.File("forward_sol_{0}.pvd".format(mesh_vertices))
+        # Iterate through the time steps stored in 'x'
+        # x[STATE] is the TimeDependentVector object
+        for i, t in enumerate(simulation_times):
+            u_plot = dl.Function(Vh2)
+            # access the .data list directly
+            vec_at_t = x[STATE].data[i]
+            # Copy values into the Function's vector
+            u_plot.vector()[:] = vec_at_t
+            u_plot.rename("concentration", "label")
+            # sanity check that max concentration is decreasing
+            print(f"Time {t}: Max concentration = {vec_at_t.norm('linf')}")
+            # Write to PVD
+            file_pvd << (u_plot, t)
+
+    # Precompute -A^T y in MAP point
+    # note -- problem contains the true noise variance in misfit. Will be overwritten in computation.
+    problem = hc.TimeDependentAD(mesh, [Vh2,Vh,Vh2], prior, misfit, simulation_times, kappa, wind_velocity, True)
+    problem.misfit.noise_variance = 1
+    # This computes -A^T Q_eps y, so -A^T y with sigma = 1
+    [u0,m0,neg_adj_y] = problem.generate_vector()
+    problem.solveFwd(u0, [u0,m0,neg_adj_y])
+    problem.solveAdj(neg_adj_y, [u0,m0,neg_adj_y]) 
+
+    return problem, neg_adj_y
 
 def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False):
     '''
@@ -79,6 +208,37 @@ def ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False
     
     return posterior,mg,lmbda_new,V_new
 
+# Helper function for slicing multivectors up to vector n, inclusive
+def multivector_slice(mv, n):
+    mv_n = MultiVector(mv[0], n)
+    for i in range(n):
+        mv_n[i].zero()
+        mv_n[i].axpy(1.0, mv[i])
+    return mv_n
+
+def rank_from_cutoff(eigenvalues, cutoff):
+    """Return the first rank at which the spectrum falls below cutoff."""
+    below_cutoff = np.flatnonzero(eigenvalues < cutoff)
+    if len(below_cutoff) == 0:
+        print("Approximation is too low rank, cutoff eigval not achieved")
+        return len(eigenvalues)-1
+    return int(below_cutoff[0])
+
+def calibrate_rank(pretheta, cutoff, calibration_rank, problem):
+    lmbda, V = LowRankApprox(pretheta, calibration_rank, problem)
+    rank = rank_from_cutoff(lmbda, cutoff)
+    lmbda = lmbda[0:rank]
+    V = multivector_slice(V,rank)
+    return lmbda, V
+
+def calibrate_rank_PP(thetas, cutoff, calibration_rank, problem):
+    ranks = [0 for idx in thetas]
+    for idx in range(len(thetas)):
+        theta = thetas[idx]
+        lmbda, V = LowRankApprox(theta, calibration_rank, problem)
+        ranks[idx] = rank_from_cutoff(lmbda, cutoff)
+    return max(ranks)
+
 # -log pi(theta), in this case independent uniform distributions on eta, delta, sigma
 def neg_log_hyperprior(theta, hyp_pr_params):
     min_eta, max_eta, min_del, max_del, min_sig, max_sig = hyp_pr_params
@@ -97,14 +257,9 @@ def neglogpi_theta(theta, lmbda, V, tol, neg_adj_y, pretheta, hyp_pr_params, pro
 
     # make copy of lmbda, V truncated to new theta
     cutoff = tol*sigma**2*delta**2/presigma**2/predelta**2
-    r_cutoff = np.argmax(lmbda < cutoff)+1
-    if r_cutoff == 1:
-        r_cutoff = lmbda.size
-        print("Approximation is too low rank, cutoff eigval not achieved")
-    lmbda_new = lmbda[0:r_cutoff]
-    V_new = MultiVector(V[0], r_cutoff)
-    for i in range(r_cutoff):
-        V_new[i][:] = V[i]
+    rank = rank_from_cutoff(lmbda, cutoff)
+    lmbda_new = lmbda[0:rank]
+    V_new = multivector_slice(V,rank)
 
     # compute new posterior
     posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_new, V_new, neg_adj_y, pretheta, problem, use_CG)
@@ -152,14 +307,6 @@ def LowRankApprox(pretheta, k, problem):
     lmbda, V = hc.singlePassG(H_misfit_only, preprior.R, preprior.Rsolver, Omega, k) 
     return lmbda, V
 
-# Helper function for slicing multivectors
-def mv_k(mv, n):
-    mv_n = MultiVector(mv[0], n)
-    for i in range(n):
-        mv_n[i].zero()
-        mv_n[i].axpy(1.0, mv[i])
-    return mv_n
-
 # returns errors in posterior covariance for ranks ks, first rank at which error is below threshold,
 # and low rank approximation with rank max(ks)
 def PostCovError(theta, lmbda, V, neg_adj_y, pretheta, truth, ks, threshold, problem):
@@ -168,7 +315,7 @@ def PostCovError(theta, lmbda, V, neg_adj_y, pretheta, truth, ks, threshold, pro
     for ii in range(len(ks)):
         print(ii)
         k = ks[ii]
-        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda[0:k], mv_k(V,k), neg_adj_y, pretheta, problem)
+        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda[0:k], multivector_slice(V,k), neg_adj_y, pretheta, problem)
         posterior_trace,pr_tr,corr_tr = posterior.trace(method="Exact")
         errs[ii] = (posterior_trace-truth)/truth
         # first rank with error below threshold
@@ -180,3 +327,126 @@ def PostCovError(theta, lmbda, V, neg_adj_y, pretheta, truth, ks, threshold, pro
         min_k = None
         print(f'did not reach threshold before rank {max(ks)}')
     return errs, min_k
+
+def make_neg_log_pi_theta(preconditioner, rank_mode, calibration_rank, calibrated_ranks, thetas, low_rank_tolerance, neg_adj_y, hyp_pr_params, problem):
+    """
+    Make a single-input function for -log pi(theta)
+    """
+    min_eta, max_eta, min_delta, max_delta, min_sigma, max_sigma = hyp_pr_params
+
+    if preconditioner == "prior":
+        pretheta = None
+    elif preconditioner == "weakest":
+        pretheta = np.array([min_eta, 1.0, 1.0])
+    elif preconditioner == "unpreconditioned":
+        pretheta = np.array([0.0, 1.0, 1.0])
+    else:
+        raise ValueError("preconditioner must be 'prior', 'weakest', or 'unpreconditioned'")
+
+    # precompute low-rank approx for WP or UP
+    if preconditioner == 'weakest' or preconditioner == 'unpreconditioned':
+        cutoff = low_rank_tolerance * min_sigma**2 * min_delta**2
+        if rank_mode == 'calibrate':
+            lmbda, V = calibrate_rank(pretheta, cutoff, calibration_rank, problem)
+            print(f"Computing low rank approximation to rank {len(lmbda)}")
+        elif rank_mode == "fixed":
+            rank = calibrated_ranks[preconditioner]
+            lmbda, V = LowRankApprox(pretheta, rank, problem)
+        else:
+            raise ValueError("rank_mode must be calibrate or fixed")
+        rank_upper_bound = len(lmbda)       # not used for WP, UP, but still a required input
+
+    # PP handled separately, no precomputation of low rank approx
+    if preconditioner == 'prior':
+        cutoff = low_rank_tolerance
+        if rank_mode == 'calibrate':
+            rank_upper_bound = calibrate_rank_PP(thetas, cutoff, calibration_rank, problem)
+            print(f"Computing low rank approximations to rank {rank_upper_bound}")
+        elif rank_mode == 'fixed':
+            rank_upper_bound = calibrated_ranks['prior']
+        else:
+            raise ValueError("rank_mode must be calibrate or fixed")
+        lmbda = None; V = None
+
+    def neglogpi_helper(theta):
+        if preconditioner == 'prior':
+            current_lmbda, current_V = LowRankApprox(theta.tolist(), rank_upper_bound, problem)
+        else:
+            current_lmbda = lmbda; current_V = V
+        return neglogpi_theta(theta, current_lmbda, current_V, low_rank_tolerance, neg_adj_y, pretheta, hyp_pr_params, problem)
+    return neglogpi_helper, lmbda, V, pretheta
+
+
+def evaluate_pi_theta_on_grid(bounds, num_values, neglogpi_helper, plot_hyperparam_density=True, save_hyperparam_density=False):
+    eta_range = np.linspace(bounds["eta"][0], bounds["eta"][1], num_values["eta"])
+    delta_range = np.linspace(bounds["delta"][0], bounds["delta"][1], num_values["delta"])
+    sigma_range = np.linspace(bounds["sigma"][0], bounds["sigma"][1], num_values["sigma"])
+    logpi = np.zeros((num_values["eta"],num_values["delta"],num_values["sigma"]))
+    print('Progress in indices computed from (0,0,0) to ({0},{1},{2}):'.format(num_values["eta"]-1,num_values["delta"]-1,num_values["sigma"]-1))
+    for i in range(len(eta_range)):
+        for j in range(len(delta_range)):
+            for k in range(len(sigma_range)):
+                theta = np.array([eta_range[i],delta_range[j],sigma_range[k]])
+                logpi[i,j,k] = neglogpi_helper(theta)
+                print('({0},{1},{2})'.format(i,j,k))
+
+    # scaled to have max value 1 in order to avoid overflow errors
+    pitheta = np.exp(-logpi+np.min(logpi))
+
+    if plot_hyperparam_density:
+        # plot pi_theta as a function of eta and delta
+        if num_values["eta"] > 2 and num_values["delta"] > 2:
+            sig_idx = int(num_values["sigma"]/2)
+            fig = plt.figure(figsize=(10,7.2))
+            plt.rcParams.update({'font.size': 16})
+            plt.set_cmap('bone')
+            plt.pcolormesh(delta_range,eta_range,pitheta[:,:,sig_idx])
+            plt.colorbar()
+            plt.title(r'$\pi(\eta, \delta, \sigma | y)$')
+            plt.ylabel(r'$\eta$')
+            plt.xlabel(r'$\delta$')
+        else:
+            print("Too few eta or delta evaluation values for plotting.")
+
+        # plot pi_theta as a function of sigma
+        if num_values["sigma"] > 2:
+            eta_idx = int(num_values["eta"]/2); d_idx = int(num_values["delta"]/2)
+            fig = plt.figure(figsize=(10,7.2))
+            plt.rcParams.update({'font.size': 16})
+            plt.plot(sigma_range,pitheta[eta_idx,d_idx,:])
+            plt.xlabel(r'$\sigma$')
+            plt.ylabel(r'$\pi(\eta, \delta, \sigma|y)$')
+        else:
+            print("Too few sigma evaluation values for plotting.")
+
+    if save_hyperparam_density:
+        etamesh,dmesh,smesh = np.meshgrid(eta_range, delta_range, sigma_range, indexing='ij')
+        header = "eta \t\t delta \t\t sigma \t\t pi_theta"
+        filename = f"images/pi_theta_{num_values['eta']}x{num_values['delta']}x{num_values['sigma']}.txt"
+        data = np.column_stack((etamesh.ravel(), dmesh.ravel(), smesh.ravel(), pitheta.ravel()))
+        np.savetxt(filename, data, delimiter="\t", header=header, fmt=('%g', '%g', '%g', '%e'), comments="")
+
+    return pitheta
+
+def argmax_theta(neglogpi_helper, theta_init, optimization_method, optim_options, verbose=True):
+    """
+    Find the theta that maximizes pi(theta)
+    """
+    def opt_callback(intermediate_result):
+        print(f"Current x: {intermediate_result.x}")
+        print(f"Objective value: {intermediate_result.fun}")
+    if verbose:
+        callback = opt_callback
+        optim_options['disp'] = True
+    else:
+        callback = None
+        optim_options['disp'] = False
+
+    opt_start = time.time()
+    theta_opt = opt.minimize(neglogpi_helper,theta_init,method=optimization_method,callback=callback, options=optim_options)
+    opt_end = time.time()
+
+    if verbose:
+        print(f"Optimization time: {opt_end-opt_start} seconds")
+        print(f"MAP point of pi(theta|y): {theta_opt.x}")
+    return theta_opt.x
