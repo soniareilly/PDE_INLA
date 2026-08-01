@@ -47,14 +47,14 @@ def pt_pairs(list1, list2):
             newlist.append(list1[i]+[list2[j]])
     return newlist
 
-def uniform_hyperprior_support(theta, hyp_pr_params):
+def uniform_hyperprior_support(theta, param):
     '''
     Checks whether theta is in the support of the uniform hyperprior.
     Used to avoid issues with quadrature points outside the support.
     '''
-    min_eta, max_eta, min_del, max_del, min_sig, max_sig = hyp_pr_params
-    if (theta[0] > min_eta and theta[1] > min_del and theta[2] > min_sig and 
-        theta[0] < max_eta and theta[1] < max_del and theta[2] < max_sig):
+    if (theta[0] > param['min_eta'] and theta[1] > param['min_delta'] and 
+        theta[2] > param['min_sigma'] and theta[0] < param['max_eta'] and 
+        theta[1] < param['max_delta'] and theta[2] < param['max_sigma']):
         is_valid_point = True
     else:
         is_valid_point = False

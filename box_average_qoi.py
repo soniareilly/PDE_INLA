@@ -44,12 +44,12 @@ def QoIadj(qoi, Vh, boxlims):
     return b
 
 # find distribution of QoI for fixed theta
-def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, problem):
+def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False, omega_full=None):
     output = np.zeros(len(qoi))
     # find Gaussian pi(qoi|theta,y)
     prior = hc.BiLaplacianPrior(problem.Vh[PARAMETER], theta[0]*theta[1], theta[1], robin_bc=True)
     prior.mean = dl.interpolate(dl.Constant(0.), problem.Vh[PARAMETER]).vector()
-    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem)
+    posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, use_CG, omega_full)
     # mean
     mm = QoI(posterior.mean, problem.Vh[PARAMETER], boxlims)
     # var = QoI(Q_post_inv*QoIadj(1))
@@ -73,14 +73,14 @@ def QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, prob
 
 # return marginal distribution of QoI evaluated at a vector of qoi's
 # (some day make this work for a single scalar qoi too)
-def QoIdist(qoi, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, problem):
+def QoIdist(qoi, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_y, pretheta, problem, use_CG=False, omega_full=None):
     output = np.zeros(len(qoi))
     gauss_evals = np.zeros((len(qoi),quad_points.shape[0]))
     # for each quadrature point:
     for idx in range(quad_points.shape[0]):
         # find Gaussian pi(qoi|theta,y) where theta = the quadrature point
         theta = quad_points[idx,:]
-        gauss_evals[:,idx] = QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, problem)
+        gauss_evals[:,idx] = QoIdist_fixed_theta(qoi, theta, boxlims, lmbda, V, neg_adj_y, pretheta, problem, use_CG, omega_full)
         # multiply by pi(theta|y) at qpt and area/volume element and add
         output += d_area*pi_theta_quad[idx]*gauss_evals[:,idx]
     return output
@@ -89,12 +89,12 @@ def QoIdist(qoi, quad_points, pi_theta_quad, d_area, boxlims, lmbda, V, neg_adj_
 ## Finds QoI distribution at a list of locations simultaneously (unlike general code above)
 # find pi(x^i|y) for each location i in locs at values u_0_eval of u_0
 def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbda, V, 
-                        neg_adj_y, pretheta, problem):
+                        neg_adj_y, pretheta, problem, omega_full=None):
     output = np.zeros((len(locs),len(u_0_eval)))
     gauss_evals = np.zeros((len(locs),len(u_0_eval),quad_points.shape[0]))
     for idx in range(quad_points.shape[0]):
         theta = quad_points[idx,:]
-        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem)
+        posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda, V, neg_adj_y, pretheta, problem, omega_full)
         # pi(u_0^i|theta,y)
         posterior_var,pr,corr = posterior.pointwise_variance(method="Exact")
         mm = dl.Function(problem.Vh[PARAMETER],posterior.mean)
@@ -107,9 +107,11 @@ def posterior_marginals(locs, u_0_eval, quad_points, pi_theta_quad, d_area, lmbd
     return output,gauss_evals
 
 def compute_all_qoi_distributions(theta_MAP, thetas, qoi_box, quad_points, pi_theta_quad, 
-                                  d_area, qoi_range_bounds, num_qoi_values, dim, Vh, Vh2, 
-                                  true_initial_condition, lmbda, V, neg_adj_y, pretheta, problem,
-                                  plot_box=True, plot=True, save=False, theta_idx_labels=None):
+                                  d_area, qoi_range_bounds, num_qoi_values, low_rank, dim, Vh, Vh2, 
+                                  true_initial_condition, neg_adj_y, problem,
+                                  use_CG=False, theta_idx_labels=None, *, plot=True, save=False):
+    lmbda = low_rank.eigenvalues; V = low_rank.eigenvectors
+    pretheta = low_rank.pretheta; omega_full = low_rank.sketching_matrix
 
     # print QoI(constant 1 function) to test error introduced by finite element approx
     testu0 = dl.interpolate(dl.Constant(1), Vh2).vector()
@@ -117,12 +119,12 @@ def compute_all_qoi_distributions(theta_MAP, thetas, qoi_box, quad_points, pi_th
 
     # evaluate pi(qoi|y) at range of qoi values
     qoi_range = np.linspace(qoi_range_bounds[0],qoi_range_bounds[1],num_qoi_values)
-    pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, qoi_box, lmbda, V, neg_adj_y, pretheta, problem)
+    pi_qoi = QoIdist(qoi_range, quad_points, pi_theta_quad, d_area, qoi_box, lmbda, V, neg_adj_y, pretheta, problem, use_CG, omega_full)
 
-    pi_qoi_th_MAP = QoIdist_fixed_theta(qoi_range, theta_MAP, qoi_box, lmbda, V, neg_adj_y, pretheta, problem)
+    pi_qoi_th_MAP = QoIdist_fixed_theta(qoi_range, theta_MAP, qoi_box, lmbda, V, neg_adj_y, pretheta, problem, use_CG, omega_full)
     pi_qoi_thetas = [0 for idx in thetas]
     for idx in range(len(thetas)):
-        pi_qoi_thetas[idx] = QoIdist_fixed_theta(qoi_range, thetas[idx], qoi_box, lmbda, V, neg_adj_y, pretheta, problem)
+        pi_qoi_thetas[idx] = QoIdist_fixed_theta(qoi_range, thetas[idx], qoi_box, lmbda, V, neg_adj_y, pretheta, problem, use_CG, omega_full)
 
     # true QoI
     true_QoI = QoI(true_initial_condition, Vh, qoi_box)
@@ -130,7 +132,7 @@ def compute_all_qoi_distributions(theta_MAP, thetas, qoi_box, quad_points, pi_th
     if theta_idx_labels is None:
         theta_idx_labels = [idx in range(len(thetas))]
 
-    if plot_box:
+    if plot:
         if dim == 2:
             fig, ax = plt.subplots()
             ic = dl.Function(Vh)
@@ -143,9 +145,7 @@ def compute_all_qoi_distributions(theta_MAP, thetas, qoi_box, quad_points, pi_th
             fig.colorbar(plot_obj, ax=ax)
         else:
             print("QoI box and initial condition can only be visualized in 2D case")
-
     # plot distribution of QoI
-    if plot:
         plt.figure(figsize=(10,7.2))
         plt.rcParams.update({'font.size': 20})
         plt.plot(qoi_range,pi_qoi_th_MAP,linewidth=3,color='green', label=rf"$\theta^\ast$")

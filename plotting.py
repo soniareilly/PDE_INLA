@@ -1,22 +1,20 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from hippylib import *
-from hippylib.algorithms.multivector import MultiVector
+# from hippylib import *
+from pathlib import Path
 
-import hippylib_changes as hc
 from hyperparam_marginal import LowRankApprox, ComputePosterior, multivector_slice
 
 def make_single_spectrum_plot(pretheta, lmbda):
     """ plots eigenvalues, scaled to coincide with the definition in the paper """
     fig = plt.figure(figsize=(10,7.2))
     plt.rcParams.update({'font.size': 20})
-    plt.semilogy(range(len(lmbda)), lmbda*(pretheta[2]**2)*(pretheta[1]**2), linewidth=3, label=rf'$\eta=${theta3[0]}')
+    plt.semilogy(range(len(lmbda)), lmbda*(pretheta[2]**2)*(pretheta[1]**2), linewidth=3)
     plt.ylabel(r'$\lambda_i$')
     plt.xlabel(r'$i$')
-    plt.legend()
     plt.show()
 
-def compute_all_spectra(thetas, rank, low_rank_tolerance, hyp_pr_params, problem, theta_ref = None, save_scaled = False):
+def compute_all_spectra(thetas, rank, low_rank_tolerance, hyp_pr_params, problem, theta_ref=None, *, save_scaled=False):
     """ Compute UP, WP, and several PP spectra"""
     min_eta, max_eta, min_delta, max_delta, min_sigma, max_sigma = hyp_pr_params
     lmbda_priors = [0 for idx in thetas]
@@ -41,12 +39,13 @@ def compute_all_spectra(thetas, rank, low_rank_tolerance, hyp_pr_params, problem
 
     if save_scaled:
         # scale by sigma^2 delta^2 for consistency with definition of eigenvalues in the paper
+        filename = "images/spectra_full.txt"
         header = "r \t\t unprecon \t\t weakest"
         spectra = np.column_stack((np.arange(1,rank+1,1), lmbda_unprecon, lmbda_weak))
         for idx in range(len(thetas)):
             header = header + f" \t\t prior{idx+1}"
             spectra = np.column_stack((spectra, lmbda_priors[idx]*(thetas[idx][2]**2)*(thetas[idx][1]**2)))
-        np.savetxt("images/spectra_full.txt", spectra, delimiter="\t", header=header, fmt='%10.14f', comments="")
+        np.savetxt(filename, spectra, delimiter="\t", header=header, fmt='%10.14f', comments="")
 
     return (lmbda_unprecon, lmbda_weak, lmbda_priors, V_unprecon, V_weak, V_priors)
 
@@ -69,9 +68,8 @@ def plot_all_spectra(thetas, lmbda_weak, lmbda_unprecon, lmbda_priors):
     plt.legend()
 
 
-def compute_error_vs_rank(ranks, theta, eigendecompositions, neg_adj_y, hyp_pr_params, problem, cutoff=1e-2, save=False):
+def compute_error_vs_rank(ranks, theta, eigendecompositions, neg_adj_y, hyp_pr_params, problem, cutoff=1e-2, *, save=False):
     lmbda_un, lmbda_weak, lmbda_pr, V_un, V_weak, V_pr = eigendecompositions
-    min_eta, max_eta, min_delta, max_delta, min_sigma, max_sigma = hyp_pr_params
     posterior,mg,lmbda_new,V_new = ComputePosterior(theta, lmbda_pr, V_pr, neg_adj_y, theta, problem, use_CG=True)
     uQu = 0.5*mg.inner(posterior.mean)
     det_ratio = 0.0
@@ -90,19 +88,22 @@ def compute_error_vs_rank(ranks, theta, eigendecompositions, neg_adj_y, hyp_pr_p
         V_trunc_weak = multivector_slice(V_weak, r_trunc-1)
         V_trunc_un = multivector_slice(V_un, r_trunc-1)
 
-        posteriorNoCG_pr,mgNoCG_pr,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_pr, V_trunc_pr, neg_adj_y, theta, problem)
+        posteriorNoCG_pr,mgNoCG_pr,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_pr, 
+                V_trunc_pr, neg_adj_y, theta, problem)
         e1_pr[idx] = det_ratio
         for ll in posteriorNoCG_pr.d:
             e1_pr[idx] -= 0.5*np.log(1+ll)
         e2_pr[idx] = uQu-0.5*mgNoCG_pr.inner(posteriorNoCG_pr.mean)
 
-        posteriorNoCG_weak,mgNoCG_weak,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_weak, V_trunc_weak, neg_adj_y, np.array([min_eta, 1.0, 1.0]), problem)
+        posteriorNoCG_weak,mgNoCG_weak,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_weak, 
+                V_trunc_weak, neg_adj_y, np.array([hyp_pr_params['min_eta'], 1.0, 1.0]), problem)
         e1_weak[idx] = det_ratio
         for ll in posteriorNoCG_weak.d:
             e1_weak[idx] -= 0.5*np.log(1+ll)
         e2_weak[idx] = uQu-0.5*mgNoCG_weak.inner(posteriorNoCG_weak.mean)
 
-        posteriorNoCG_un,mgNoCG_un,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_un, V_trunc_un, neg_adj_y, np.array([0,1,1]), problem)
+        posteriorNoCG_un,mgNoCG_un,lmbda_new,V_new = ComputePosterior(theta, lmbda_trunc_un, 
+                V_trunc_un, neg_adj_y, np.array([0,1,1]), problem)
         e1_un[idx] = det_ratio
         for ll in posteriorNoCG_un.d:
             e1_un[idx] -= 0.5*np.log(1+ll)
@@ -114,8 +115,10 @@ def compute_error_vs_rank(ranks, theta, eigendecompositions, neg_adj_y, hyp_pr_p
     print(f"PP, WP, and UP ranks to reach total error {cutoff}: {r_p_err}, {r_w_err}, {r_u_err}")
 
     if save:
+        filename = "images/log_pi_error.txt"
         header = "r \t\t e1_pr \t\t e1_weak \t\t e1_un \t\t e2_pr \t\t e2_weak \t\t e2_un"
-        np.savetxt("images/log_pi_error.txt", np.column_stack((ranks, e1_pr, e1_weak, e1_un, e2_pr, e2_weak, e2_un)), delimiter="\t", header=header, fmt='%10.14f', comments="")
+        data = np.column_stack((ranks, e1_pr, e1_weak, e1_un, e2_pr, e2_weak, e2_un))
+        np.savetxt(filename, data, delimiter="\t", header=header, fmt='%10.14f', comments="")
 
     return (e1_pr, e1_weak, e1_un, e2_pr, e2_weak, e2_un)
 
@@ -133,7 +136,7 @@ def plot_error_vs_rank(ranks, errors):
     plt.ylabel('error')
     plt.show()
 
-def plot_quad_points(quad_points, thetas=None, theta_MAP=None, save_plot=False):
+def plot_quad_points(quad_points, thetas=None, theta_MAP=None, *, save=False):
     plt.rcParams.update({
         "font.family": "serif",       
         "mathtext.fontset": "cm",
@@ -162,13 +165,17 @@ def plot_quad_points(quad_points, thetas=None, theta_MAP=None, save_plot=False):
     # three green points for reference thetas
     if thetas is not None:
         green_shades = ['#b3e600', '#00e600', '#009900'] 
-        ax.scatter(thetas[0][0], thetas[0][2], thetas[0][1], color=green_shades[0], s=95, edgecolors='none', depthshade=True, label=r'$\theta_1$') 
-        ax.scatter(thetas[1][0], thetas[1][2], thetas[1][1], color=green_shades[1], s=95, edgecolors='none', depthshade=True, label=r'$\theta_2$') 
-        ax.scatter(thetas[2][0], thetas[2][2], thetas[2][1], color=green_shades[2], s=95, edgecolors='none', depthshade=True, label=r'$\theta_3$')
+        ax.scatter(thetas[0][0], thetas[0][2], thetas[0][1], color=green_shades[0], s=95, 
+                   edgecolors='none', depthshade=True, label=r'$\theta_1$') 
+        ax.scatter(thetas[1][0], thetas[1][2], thetas[1][1], color=green_shades[1], s=95, 
+                   edgecolors='none', depthshade=True, label=r'$\theta_2$') 
+        ax.scatter(thetas[2][0], thetas[2][2], thetas[2][1], color=green_shades[2], s=95, 
+                   edgecolors='none', depthshade=True, label=r'$\theta_3$')
 
     # red MAP point 
     ax.scatter(theta_MAP[0], theta_MAP[2], theta_MAP[1], 
-            color='red', s=190, edgecolors='none', depthshade=False, alpha=1.0, zorder=3, label=r'$\theta_{\mathrm{MAP}}$') 
+            color='red', s=190, edgecolors='none', depthshade=False, alpha=1.0, zorder=3, 
+            label=r'$\theta_{\mathrm{MAP}}$') 
 
     # axis labels
     ax.set_xlabel(r'$\gamma$', fontsize=22, labelpad=14)
@@ -196,5 +203,46 @@ def plot_quad_points(quad_points, thetas=None, theta_MAP=None, save_plot=False):
 
     fig.subplots_adjust(left=0.05, right=0.83, bottom=0.05, top=0.95)
 
-    if save_plot:
+    if save:
         fig.savefig("images/quad_points.pdf")
+
+
+def save_experiment_results(
+    output_dir,
+    lmbda,
+    theta_map,
+    quad_points,
+    pi_theta_quad,
+    pi_qoi,
+    pi_qoi_theta_map,
+):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    np.save(
+        output_dir / "lmbda.npy",
+        lmbda,
+    )
+    np.save(
+        output_dir / "theta_map.npy",
+        theta_map,
+    )
+    np.save(
+        output_dir / "quad_points.npy",
+        quad_points,
+    )
+    np.save(
+        output_dir / "pi_theta_quad.npy",
+        pi_theta_quad,
+    )
+    np.save(
+        output_dir / "pi_qoi.npy",
+        pi_qoi,
+    )
+    np.save(
+        output_dir / "pi_qoi_theta_map.npy",
+        pi_qoi_theta_map,
+    )
